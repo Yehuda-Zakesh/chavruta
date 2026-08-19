@@ -1,0 +1,378 @@
+/* ---------------------------------------------------------------------------
+ * חברותא — עיצוב לפי DESIGN_GUIDE של אוצריא.
+ *
+ * כל צבע, גופן ורדיוס מגיעים ממשתני CSS שמוזנים מ-theme של אוצריא
+ * (ראו js/theme.js). הערכים כאן הם ברירות מחדל לרגע שלפני plugin.boot
+ * בלבד — אין בקובץ הזה אף צבע מקודד מחוץ להגדרות המשתנים.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  --color-primary: #6750a4;
+  --color-on-primary: #ffffff;
+  --color-secondary: #625b71;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #e8def8;
+  --color-on-secondary-container: #1d192b;
+  --color-surface: #fffbfe;
+  --color-on-surface: #1c1b1f;
+  --color-on-surface-variant: #49454f;
+  --color-surface-container-high: #ece6f0;
+  --color-surface-container-highest: #e6e0e9;
+  --color-error: #b3261e;
+  --color-on-error: #ffffff;
+  --color-outline: #79747e;
+  --color-primary-subtle: rgba(103, 80, 164, 0.12);
+  --color-secondary-subtle: rgba(98, 91, 113, 0.12);
+  --color-error-subtle: rgba(179, 38, 30, 0.12);
+
+  --font-main: 'FrankRuhlCLM', 'David', serif;
+  --font-size-base: 18px;
+  --line-height: 1.5;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* צלליות: מוגדרות כמשתנים כדי שלא יופיע צבע מקודד בשום כלל CSS. */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-main);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
+  direction: rtl;
+  /* הגלילה קורית בתוכן, לא בעמוד — כך פס הכותרת אינו נגלל. */
+  overflow: hidden;
+}
+
+/* --- שלד: פס כותרת קבוע + תוכן שגולל -------------------------------- */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* גדלי הפס ב-px בכוונה: הפס חייב להישאר בגובה הסרגל של אוצריא גם אצל
+   משתמש שהגדיר גופן קריאה גדול. זהו החריג היחיד ליחידות היחסיות. */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 16px;
+  background: var(--color-surface-container-high);
+  flex-shrink: 0;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-on-surface);
+  white-space: nowrap;
+}
+
+.topbar .subtitle {
+  font-size: 12px;
+  color: var(--color-on-surface-variant);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar .spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* --- מחוון מצב ------------------------------------------------------- */
+
+/* מחוון המצב יושב בפס הכותרת, ולכן גם הוא ב-px קבוע כמו הפס עצמו. */
+.topbar .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-on-surface-variant);
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-pill);
+  background: var(--color-on-surface-variant);
+  flex-shrink: 0;
+}
+
+.status-dot.on {
+  background: var(--color-primary);
+}
+
+.status-dot.off {
+  background: var(--color-error);
+}
+
+/* --- כרטיס ---------------------------------------------------------- */
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  box-shadow: var(--shadow-card);
+}
+
+.card-title {
+  font-size: 1em;
+  font-weight: 700;
+  color: var(--color-primary);
+  margin-bottom: 12px;
+}
+
+.card-hint {
+  font-size: 0.82em;
+  color: var(--color-on-surface-variant);
+  margin-top: 10px;
+}
+
+/* --- שורות טופס ----------------------------------------------------- */
+
+.field {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.field + .field {
+  margin-top: 12px;
+}
+
+.field label {
+  font-size: 0.82em;
+  font-weight: 600;
+  color: var(--color-on-surface-variant);
+  display: block;
+  margin-bottom: 6px;
+}
+
+.field-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.input {
+  padding: 9px 12px;
+  border: 1.5px solid var(--color-outline);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-main);
+  font-size: 0.95em;
+  color: var(--color-on-surface);
+  background: var(--color-surface);
+  direction: rtl;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+
+.input:focus {
+  border-color: var(--color-primary);
+}
+
+.input:disabled {
+  opacity: 0.55;
+}
+
+/* --- כפתורים -------------------------------------------------------- */
+
+.btn-primary,
+.btn-secondary {
+  border-radius: var(--radius-sm);
+  padding: 9px 20px;
+  font-family: var(--font-main);
+  font-size: 0.95em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  border: none;
+}
+
+.btn-secondary {
+  background: var(--color-secondary-subtle);
+  color: var(--color-on-surface);
+  border: 1px solid var(--color-outline);
+}
+
+.btn-primary:hover,
+.btn-secondary:hover {
+  opacity: 0.88;
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* --- chip ----------------------------------------------------------- */
+
+.chip {
+  display: inline-block;
+  border-radius: var(--radius-pill);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  padding: 3px 12px;
+  font-size: 0.78em;
+  font-weight: 600;
+}
+
+/* --- רשימת המחוברים ------------------------------------------------- */
+
+.peer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+}
+
+.peer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  background: var(--color-secondary-subtle);
+}
+
+.peer-name {
+  font-weight: 600;
+  font-size: 0.95em;
+}
+
+.peer-seen {
+  font-size: 0.78em;
+  color: var(--color-on-surface-variant);
+  margin-inline-start: auto;
+}
+
+.empty {
+  font-size: 0.88em;
+  color: var(--color-on-surface-variant);
+}
+
+/* --- שורת מצב פרטים ------------------------------------------------- */
+
+.detail {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  font-size: 0.9em;
+}
+
+.detail + .detail {
+  border-top: 1px solid var(--color-outline);
+}
+
+.detail-label {
+  color: var(--color-on-surface-variant);
+  font-size: 0.88em;
+  min-width: 8em;
+}
+
+.detail-value {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* --- הודעות --------------------------------------------------------- */
+
+.banner {
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  font-size: 0.88em;
+  background: var(--color-secondary-subtle);
+  color: var(--color-on-surface);
+  border: 1px solid var(--color-outline);
+}
+
+.banner.error {
+  background: var(--color-error-subtle);
+  border-color: var(--color-error);
+}
+
+.banner-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.banner code {
+  font-family: var(--font-main);
+  background: var(--color-primary-subtle);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+}
+
+.hidden {
+  display: none;
+}
+
+.fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar {
+    height: 44px;
+  }
+
+  .field {
+    flex-direction: column;
+  }
+}

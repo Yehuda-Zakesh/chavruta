@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>חברותא</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <h1>חברותא</h1>
+        <span class="subtitle" id="deviceLabel"></span>
+        <span class="spacer"></span>
+        <span class="status">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">מתחבר…</span>
+        </span>
+      </header>
+
+      <main class="app-content">
+        <div id="banners"></div>
+
+        <section class="card">
+          <div class="card-title">קוד החברותא</div>
+          <div class="field">
+            <div class="field-grow">
+              <label for="roomInput">מלה או משפט שאתה והחברותא מקלידים אצל שניכם</label>
+              <input
+                class="input"
+                id="roomInput"
+                type="text"
+                autocomplete="off"
+                placeholder="לדוגמה: דף יומי בבוקר"
+              />
+            </div>
+            <button class="btn-primary" id="joinButton" type="button">התחברות</button>
+            <button class="btn-secondary hidden" id="leaveButton" type="button">יציאה</button>
+          </div>
+          <div class="card-hint">
+            הקוד אינו נשלח לרשת — ממנו נגזרת חתימה שמאפשרת רק למי שיודע אותו
+            לסנכרן איתך. בחרו קוד שאינו ניחוש מובן מאליו.
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-title">מי לומד איתי</div>
+          <ul class="peer-list" id="peerList"></ul>
+          <div class="empty hidden" id="peerEmpty">אף אחד לא מחובר כרגע לקוד הזה.</div>
+        </section>
+
+        <section class="card">
+          <div class="card-title">מצב</div>
+          <div class="detail">
+            <span class="detail-label">המקום שלי</span>
+            <span class="detail-value" id="localSpot">—</span>
+          </div>
+          <div class="detail">
+            <span class="detail-label">המקום של החברותא</span>
+            <span class="detail-value" id="remoteSpot">—</span>
+          </div>
+          <div class="detail">
+            <span class="detail-label">שם המכשיר שלי</span>
+            <span class="detail-value field-grow">
+              <span class="field">
+                <input class="input" id="nameInput" type="text" autocomplete="off" />
+                <button class="btn-secondary" id="nameButton" type="button">שמירה</button>
+              </span>
+            </span>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-title">איך זה עובד</div>
+          <div class="card-hint">
+            מתאם חברותא רץ על כל אחד מהמחשבים ומדבר עם השני ברשת המקומית
+            (אותו ראוטר, בלי אינטרנט ובלי שרת חיצוני). כשאחד מכם עובר דף,
+            השני עובר איתו. אין צורך בכתובות IP: שני המתאמים מוצאים זה את זה
+            לבד, ומסנכרנים רק עם מי שהקליד את אותו קוד חברותא.
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="js/theme.js"></script>
+    <script src="js/companion.js"></script>
+    <script src="js/sync-engine.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

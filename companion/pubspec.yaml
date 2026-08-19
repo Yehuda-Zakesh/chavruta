@@ -1,0 +1,13 @@
+name: chavruta_companion
+description: מתאם חברותא — גשר סנכרון מקומי בין מופעי אוצריא ברשת המקומית.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  crypto: ^3.0.7
+
+dev_dependencies:
+  test: ^1.25.0

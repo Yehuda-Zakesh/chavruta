@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.yehudazakesh.chavruta",
+  "name": "חברותא",
+  "version": "0.1.0",
+  "description": "לומדים יחד בשני מחשבים: מקום הלימוד מסתנכרן ביניכם דרך הרשת המקומית.",
+  "author": "יהודה זקש",
+  "stability": "beta",
+  "homepage": "https://github.com/Yehuda-Zakesh/chavruta",
+  "entrypoint": "index.html",
+  "icon": "icon/icon.png",
+  "minAppVersion": "0.9.97",
+  "sdkVersion": "1.x",
+  "permissions": [
+    "app.info.read",
+    "app.startup_contributions",
+    "app.run_on_startup",
+    "app.background_keep_alive",
+    "events.subscribe:theme.changed",
+    "events.subscribe:reader.current_ref_changed",
+    "reader.open",
+    "network.localhost",
+    "plugin.storage.read",
+    "plugin.storage.write",
+    "ui.feedback"
+  ],
+  "network": {
+    "enabled": true,
+    "allowlist": ["127.0.0.1"]
+  },
+  "contributes": {
+    "toolTab": {
+      "title": "חברותא",
+      "order": 200,
+      "allowOrderBeforeBuiltIns": false,
+      "defaultPinned": true,
+      "iconName": "people_24_regular"
+    },
+    "startup": {
+      "activationEvents": ["app.startup"],
+      "keepAlive": true
+    },
+    "background": {
+      "entrypoint": "background.html"
+    },
+    "publishedDataTypes": []
+  }
+}

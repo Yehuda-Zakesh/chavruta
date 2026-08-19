@@ -1,0 +1,15 @@
+# פלט בנייה
+dist/
+
+# Dart
+.dart_tool/
+.packages
+*.exe
+*.otzplugin
+
+# עורכים ומערכת
+.idea/
+.vscode/
+.claude/
+Thumbs.db
+desktop.ini
