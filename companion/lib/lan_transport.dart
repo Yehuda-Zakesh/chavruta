@@ -85,24 +85,42 @@ class LanTransport {
     }
   }
 
+  /// כתובת ה-broadcast של הרשת שאליה שייכת [address], או `null` אם אינה
+  /// כתובת IPv4 תקינה.
+  ///
+  /// Dart אינו חושף את מסכת הרשת, ולכן המסכה נגזרת מהכתובת:
+  /// - `169.254.x.x` — כתובת link-local, שהיא תמיד /16. זה המצב **כששני
+  ///   מחשבים מחוברים בכבל רשת ישר בלי ראוטר**: אין DHCP, ולכן Windows
+  ///   נותן לכל צד כתובת כזאת. ב-/24 שגוי ה-broadcast לא היה מגיע לצד השני.
+  /// - כל השאר — /24, הנחה שנכונה כמעט בכל רשת ביתית או רשת מוסד קטנה.
+  static String? broadcastAddressForIPv4(String address) {
+    final octets = address.split('.');
+    if (octets.length != 4) return null;
+    for (final octet in octets) {
+      final value = int.tryParse(octet);
+      if (value == null || value < 0 || value > 255) return null;
+    }
+    if (octets[0] == '169' && octets[1] == '254') return '169.254.255.255';
+    return '${octets[0]}.${octets[1]}.${octets[2]}.255';
+  }
+
   /// כתובות ה-broadcast המכוונות של הכרטיסים הפעילים.
   ///
-  /// Dart אינו חושף את מסכת הרשת, ולכן אנחנו מניחים /24 — הנחה שנכונה
-  /// כמעט בכל רשת ביתית או רשת מוסד קטנה. הכתובת הגלובלית נשלחת בכל
-  /// מקרה, כך שגם ברשת עם מסכה אחרת הסנכרון עדיין עובד.
+  /// כולל כתובות link-local, כדי שחיבור ישיר בכבל בין שני מחשבים — בלי
+  /// ראוטר ובלי DHCP — יעבוד. הכתובת הגלובלית נשלחת בכל מקרה, אבל בחיבור
+  /// כזה אין מסלול ברירת מחדל, ולכן דווקא הכתובות המכוונות הן שמגיעות.
   Future<Set<InternetAddress>> _directedBroadcastAddresses() async {
     final result = <InternetAddress>{};
     try {
       final interfaces = await NetworkInterface.list(
         type: InternetAddressType.IPv4,
         includeLoopback: false,
-        includeLinkLocal: false,
+        includeLinkLocal: true,
       );
       for (final interface in interfaces) {
         for (final address in interface.addresses) {
-          final octets = address.address.split('.');
-          if (octets.length != 4) continue;
-          result.add(InternetAddress('${octets[0]}.${octets[1]}.${octets[2]}.255'));
+          final broadcast = broadcastAddressForIPv4(address.address);
+          if (broadcast != null) result.add(InternetAddress(broadcast));
         }
       }
     } catch (e) {

@@ -45,7 +45,7 @@ DefaultDirName={autopf}\Chavruta
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir={#DistDir}
-OutputBaseFilename=chavruta-companion-{#MyAppVersion}-windows
+OutputBaseFilename=chavruta-setup-{#MyAppVersion}
 SetupIconFile=chavruta.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -82,8 +82,13 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 ; חוק חומת אש לתעבורת ה-broadcast של המתאם. רק בהתקנת מנהל — בהתקנה
 ; למשתמש בודד Windows ישאל את המשתמש בפעם הראשונה, וזה מספיק.
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Chavruta Companion (UDP-In)"" dir=in action=allow protocol=UDP localport={#LanPort} program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden waituntilterminated; Tasks: firewall; StatusMsg: "מוסיף חוק חומת אש…"
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Chavruta Companion (UDP-Out)"" dir=out action=allow protocol=UDP program=""{app}\{#MyAppExeName}"" profile=private,domain"; Flags: runhidden waituntilterminated; Tasks: firewall
+;
+; profile=any ולא private בלבד: נקודה חמה שמחשב או טלפון משתף מסומנת אצל
+; Windows כרשת ציבורית לא מעט פעמים, וזה תרחיש השימוש המרכזי. הפתיחה אינה
+; מסוכנת — המתאם מקבל רק הודעות חתומות HMAC במפתח שנגזר מקוד החברותא,
+; וכל השאר נזרק בשקט.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Chavruta Companion (UDP-In)"" dir=in action=allow protocol=UDP localport={#LanPort} program=""{app}\{#MyAppExeName}"" profile=any"; Flags: runhidden waituntilterminated; Tasks: firewall; StatusMsg: "מוסיף חוק חומת אש…"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Chavruta Companion (UDP-Out)"" dir=out action=allow protocol=UDP program=""{app}\{#MyAppExeName}"" profile=any"; Flags: runhidden waituntilterminated; Tasks: firewall
 
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--hidden"; Description: "הפעלת המתאם עכשיו"; Flags: nowait postinstall skipifsilent runhidden
 #if PluginFile != ""

@@ -81,7 +81,7 @@ jobs:
           path: |
             dist/ChavrutaCompanion.exe
             dist/*.otzplugin
-            dist/chavruta-companion-*-windows.exe
+            dist/chavruta-setup-*.exe
           if-no-files-found: error
 
       - name: Release
@@ -91,5 +91,5 @@ jobs:
           name: חברותא ${{ steps.version.outputs.version }}
           generate_release_notes: true
           files: |
-            dist/chavruta-companion-*-windows.exe
+            dist/chavruta-setup-*.exe
             dist/*.otzplugin
