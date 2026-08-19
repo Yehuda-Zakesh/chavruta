@@ -68,8 +68,35 @@
 
 ## פיתוח
 
-דרישות: Dart SDK 3.4+ (או Flutter), ולאריזת התוסף — אוצריא 0.9.97 ומעלה
-מותקנת. למתקין — [Inno Setup 6](https://jrsoftware.org/isdl.php).
+דרישות: Dart SDK 3.4+ (או Flutter). לאריזת התוסף עם ולידציה מלאה — אוצריא
+0.9.97 ומעלה מותקנת; בלעדיה נארז ZIP תקני בלי ולידציה. למתקין —
+[Inno Setup 6](https://jrsoftware.org/isdl.php).
+
+### פיתוח חי — בלי אריזה בכל שינוי
+
+אוצריא במצב debug טוענת את התוסף ישירות מהתיקייה, עם רענון אוטומטי בכל
+שמירה. **אין צורך לארוז כדי לראות שינוי:**
+
+1. הריצו אוצריא במצב debug — `flutter run -d windows` בתיקיית אוצריא, או
+   ה-build הקיים ב-`build\windows\x64\runner\Debug\otzaria.exe`.
+2. פאנל "תוספים" ← אייקון התיקייה בסרגל העליון (מופיע רק במצב debug).
+3. בחרו את התיקייה `plugin\` של הריפו הזה. התוסף ייטען עם תג `DEV`.
+4. כל שמירה של קובץ ב-`plugin\` מרעננת את ה-WebView מיד.
+
+בגרסת release המותקנת אין אייקון תיקייה — שם מתקינים קובץ `.otzplugin` ארוז.
+אריזה נדרשת רק כשרוצים להתקין אצל מישהו אחר.
+
+### בנייה ושחרור
+
+השחרור נבנה ב-GitHub Actions, לא במחשב:
+
+- כל דחיפה ל-`main` — [CI](.github/workflows/ci.yml) מריץ analyze ובדיקות,
+  ומעלה `ChavrutaCompanion.exe` ו-`.otzplugin` כ-artifact להורדה.
+- תג `v<גרסה>` (למשל `v0.1.0`, חייב להתאים ל-`version` שבמניפסט) —
+  [Release](.github/workflows/release.yml) בונה גם את המתקין ותולה את הכול
+  ב-GitHub Release.
+
+בנייה מקומית, כשצריך:
 
 ```powershell
 # בנייה מלאה: מתאם, תוסף, מתקין ← dist\
@@ -77,6 +104,9 @@
 
 # רק המתאם, בלי אריזה ובלי מתקין
 .\tool\build.ps1 -SkipPlugin -SkipInstaller
+
+# אריזת התוסף בלבד, בלי אוצריא (מה ש-CI עושה)
+.\tool\pack-plugin.ps1
 ```
 
 ### המתאם

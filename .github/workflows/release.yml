@@ -1,0 +1,92 @@
+name: Release
+
+# שחרור נבנה כאן, לא במחשב של המפתח: תיוג v* מייצר את שלושת התוצרים
+# (מתאם, תוסף, מתקין) ותולה אותם ב-Release. הרצה ידנית מייצרת את אותם
+# תוצרים בלי Release, לבדיקה.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: בנייה ל-Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: גרסה מתוך המניפסט
+        id: version
+        shell: pwsh
+        run: |
+          $manifest = Get-Content plugin/manifest.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $version = $manifest.version
+          # תג v1.2.3 חייב להתאים לגרסה שבמניפסט, אחרת השחרור מבלבל.
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
+            if ($tag -ne $version) {
+              throw "התג v$tag אינו תואם ל-version שבמניפסט ($version)"
+            }
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: המתאם — בדיקות וקימפול
+        working-directory: companion
+        run: |
+          dart pub get
+          dart analyze
+          dart test
+          dart compile exe bin/chavruta_companion.dart -o ../dist/ChavrutaCompanion.exe
+
+      - name: התוסף — אריזה
+        shell: pwsh
+        run: ./tool/pack-plugin.ps1 -Output dist
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc) { throw "ISCC.exe לא נמצא" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: המתקין — בנייה
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $dist = Join-Path $PWD 'dist'
+          & "$env:ISCC" "/DMyAppVersion=$env:VERSION" "/DDistDir=$dist" "/DPluginFile=chavruta-$env:VERSION.otzplugin" installer\chavruta.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC נכשל" }
+
+      - name: העלאת תוצרים
+        uses: actions/upload-artifact@v4
+        with:
+          name: chavruta-${{ steps.version.outputs.version }}-windows
+          path: |
+            dist/ChavrutaCompanion.exe
+            dist/*.otzplugin
+            dist/chavruta-companion-*-windows.exe
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: חברותא ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/chavruta-companion-*-windows.exe
+            dist/*.otzplugin

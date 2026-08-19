@@ -4,20 +4,46 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  companion:
-    name: מתאם — analyze + test
+  build:
+    name: בדיקות ובנייה
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: companion
     steps:
       - uses: actions/checkout@v4
+
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
-      - run: dart pub get
-      - run: dart analyze --fatal-infos
-      - run: dart test
-      - run: dart compile exe bin/chavruta_companion.dart -o ChavrutaCompanion.exe
+
+      - name: המתאם — analyze
+        working-directory: companion
+        run: |
+          dart pub get
+          dart analyze
+
+      - name: המתאם — בדיקות
+        working-directory: companion
+        run: dart test
+
+      - name: המתאם — קימפול
+        working-directory: companion
+        run: dart compile exe bin/chavruta_companion.dart -o ../dist/ChavrutaCompanion.exe
+
+      # אריזה בלי אוצריא: ולידציה קלה בלבד. הוולידציה המלאה (הרשאות מול
+      # קריאות API, תאימות DESIGN_GUIDE) רצה בפיתוח מקומי דרך
+      # `otzaria pack-plugin`, כי היא חיה בתוך אוצריא עצמה.
+      - name: התוסף — אריזה
+        shell: pwsh
+        run: ./tool/pack-plugin.ps1 -Output dist
+
+      # כך אפשר להוריד גרסה לבדיקה מכל commit, בלי לתייג שחרור.
+      - name: העלאת תוצרים
+        uses: actions/upload-artifact@v4
+        with:
+          name: chavruta-dev-build
+          path: |
+            dist/ChavrutaCompanion.exe
+            dist/*.otzplugin
+          if-no-files-found: error

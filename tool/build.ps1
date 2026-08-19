@@ -114,21 +114,26 @@ if ($SkipPlugin) {
 }
 else {
   Step "אורז את התוסף"
-  $otz = Find-Otzaria
-  if ($null -eq $otz) {
-    throw "לא נמצאה אוצריא לאריזת התוסף. העבירו -Otzaria <נתיב ל-otzaria.exe> או -SkipPlugin."
-  }
-  Write-Host "  אוצריא: $otz" -ForegroundColor Gray
-
-  # אוצריא היא אפליקציית חלונות, ולכן קריאה רגילה אליה חוזרת מיד ו-
-  # $LASTEXITCODE אינו נקבע. ממתינים לתהליך, ובודקים את התוצאה לפי הקובץ.
   $target = Join-Path $distDir $pluginFile
-  if (Test-Path $target) { Remove-Item $target -Force }
-  $packer = Start-Process -FilePath $otz -Wait -PassThru -NoNewWindow -ArgumentList @(
-    "pack-plugin", (Join-Path $root "plugin"), "--force", "-o", $target
-  )
-  if (-not (Test-Path $target)) {
-    throw "אריזת התוסף נכשלה (קוד יציאה $($packer.ExitCode)). הריצו את הפקודה ידנית כדי לראות את דוח הוולידציה."
+  $otz = Find-Otzaria
+
+  if ($null -eq $otz) {
+    # בלי אוצריא אין ולידציה מלאה, אבל אריזה כן — כך CI עובד בלי התקנה.
+    Write-Warning "אוצריא לא נמצאה — אורז בלי ולידציה מלאה (הרשאות, תאימות עיצוב)."
+    & (Join-Path $PSScriptRoot "pack-plugin.ps1") -Output $distDir | Out-Null
+  }
+  else {
+    Write-Host "  אוצריא: $otz" -ForegroundColor Gray
+
+    # אוצריא היא אפליקציית חלונות, ולכן קריאה רגילה אליה חוזרת מיד ו-
+    # $LASTEXITCODE אינו נקבע. ממתינים לתהליך, ובודקים לפי הקובץ.
+    if (Test-Path $target) { Remove-Item $target -Force }
+    $packer = Start-Process -FilePath $otz -Wait -PassThru -NoNewWindow -ArgumentList @(
+      "pack-plugin", (Join-Path $root "plugin"), "--force", "-o", $target
+    )
+    if (-not (Test-Path $target)) {
+      throw "אריזת התוסף נכשלה (קוד יציאה $($packer.ExitCode)). הריצו את הפקודה ידנית כדי לראות את דוח הוולידציה."
+    }
   }
   Write-Host "  $target" -ForegroundColor Gray
 }
