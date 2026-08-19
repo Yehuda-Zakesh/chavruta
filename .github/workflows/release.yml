@@ -38,8 +38,10 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: המתאם — בדיקות וקימפול
-        working-directory: companion
+        shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Set-Location companion
           dart pub get
           dart analyze
           dart test
@@ -68,7 +70,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           $dist = Join-Path $PWD 'dist'
-          & "$env:ISCC" "/DMyAppVersion=$env:VERSION" "/DDistDir=$dist" "/DPluginFile=chavruta-$env:VERSION.otzplugin" installer\chavruta.iss
+          $version = $env:VERSION
+          & "$env:ISCC" "/DMyAppVersion=$version" "/DDistDir=$dist" "/DPluginFile=chavruta-$version.otzplugin" installer\chavruta.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC נכשל" }
 
       - name: העלאת תוצרים

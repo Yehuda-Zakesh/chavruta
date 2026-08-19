@@ -28,8 +28,11 @@ jobs:
         run: dart test
 
       - name: המתאם — קימפול
-        working-directory: companion
-        run: dart compile exe bin/chavruta_companion.dart -o ../dist/ChavrutaCompanion.exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Set-Location companion
+          dart compile exe bin/chavruta_companion.dart -o ../dist/ChavrutaCompanion.exe
 
       # אריזה בלי אוצריא: ולידציה קלה בלבד. הוולידציה המלאה (הרשאות מול
       # קריאות API, תאימות DESIGN_GUIDE) רצה בפיתוח מקומי דרך
