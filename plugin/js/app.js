@@ -15,14 +15,22 @@
   const ROOM_KEY = 'roomCode';
 
   const el = {
+    topbar: document.getElementById('topbar'),
+    appContent: document.getElementById('appContent'),
     deviceLabel: document.getElementById('deviceLabel'),
+    statusPill: document.getElementById('statusPill'),
     statusDot: document.getElementById('statusDot'),
     statusText: document.getElementById('statusText'),
     banners: document.getElementById('banners'),
+    heroViz: document.getElementById('heroViz'),
+    heroTitle: document.getElementById('heroTitle'),
+    heroSub: document.getElementById('heroSub'),
+    roomChip: document.getElementById('roomChip'),
     roomInput: document.getElementById('roomInput'),
     joinButton: document.getElementById('joinButton'),
     leaveButton: document.getElementById('leaveButton'),
     peerList: document.getElementById('peerList'),
+    peerCount: document.getElementById('peerCount'),
     peerEmpty: document.getElementById('peerEmpty'),
     localSpot: document.getElementById('localSpot'),
     remoteSpot: document.getElementById('remoteSpot'),
@@ -34,11 +42,36 @@
   let nameDirty = false;
   let ownsEngine = false;
 
+  /** הקוד שהזיווג הנוכחי נעשה בו — למען ה-chip שבכרטיס הראשי. המתאם מדווח
+   *  אם יש זיווג, אך לא את הקוד עצמו, ולכן הוא נזכר כאן. */
+  let activeRoom = '';
+
   // --- תצוגה ---------------------------------------------------------------
 
   function setStatus(kind, text) {
     el.statusDot.className = 'status-dot' + (kind ? ' ' + kind : '');
+    el.statusPill.className = 'status' + (kind ? ' ' + kind : '');
     el.statusText.textContent = text;
+  }
+
+  /**
+   * הכרטיס הראשי: ויזואליזציית החיבור, כותרת ומשפט הסבר.
+   * `state` הוא idle / waiting / linked / error, וה-CSS מצייר לפיו את הפס
+   * שבין שני המחשבים.
+   */
+  function setHero(state, title, sub) {
+    el.heroViz.className = 'hero-viz state-' + state;
+    el.heroTitle.textContent = title;
+    el.heroSub.textContent = sub;
+  }
+
+  function setRoomChip(code) {
+    const show = typeof code === 'string' && code !== '';
+    el.roomChip.classList.toggle('hidden', !show);
+    if (show) {
+      el.roomChip.textContent = code;
+      el.roomChip.title = code;
+    }
   }
 
   function banner(id, kind, title, html) {
@@ -70,24 +103,51 @@
     return 'לפני ' + Math.round(seconds / 60) + ' דקות';
   }
 
-  function renderPeers(peers) {
+  /** האות הראשונה בשם, לעיגול האווטאר. */
+  function initialOf(name) {
+    const trimmed = (name || '').trim();
+    return trimmed === '' ? '?' : trimmed.charAt(0);
+  }
+
+  function renderPeers(peers, remote) {
     const list = Array.isArray(peers) ? peers : [];
     el.peerList.textContent = '';
     el.peerEmpty.classList.toggle('hidden', list.length > 0);
+    el.peerCount.classList.toggle('hidden', list.length === 0);
+    el.peerCount.textContent = String(list.length);
 
     list.forEach(function (peer) {
       const item = document.createElement('li');
       item.className = 'peer';
 
+      const avatar = document.createElement('span');
+      avatar.className = 'peer-avatar';
+      avatar.setAttribute('aria-hidden', 'true');
+      avatar.textContent = initialOf(peer.name);
+
+      const main = document.createElement('span');
+      main.className = 'peer-main';
+
       const name = document.createElement('span');
       name.className = 'peer-name';
       name.textContent = peer.name || 'מכשיר ללא שם';
+      main.appendChild(name);
+
+      // המתאם מדווח מקום מרוחק אחד בלבד, עם שם השולח. כשהוא שייך למחובר
+      // הזה, מקום הלימוד שלו מוצג בשורה שלו.
+      if (remote && remote.fromName && remote.fromName === peer.name) {
+        const spot = document.createElement('span');
+        spot.className = 'peer-spot';
+        spot.textContent = describeSpot(remote.location);
+        main.appendChild(spot);
+      }
 
       const seen = document.createElement('span');
       seen.className = 'peer-seen';
       seen.textContent = describeSeen(peer.lastSeenMs);
 
-      item.appendChild(name);
+      item.appendChild(avatar);
+      item.appendChild(main);
       item.appendChild(seen);
       el.peerList.appendChild(item);
     });
@@ -100,18 +160,35 @@
     }
 
     const paired = state.paired === true;
+    const peers = Array.isArray(state.peers) ? state.peers : [];
     el.joinButton.textContent = paired ? 'עדכון קוד' : 'התחברות';
     el.leaveButton.classList.toggle('hidden', !paired);
+    setRoomChip(paired ? activeRoom : '');
 
     if (!paired) {
       setStatus('', 'לא מחובר לחברותא');
-    } else if (Array.isArray(state.peers) && state.peers.length > 0) {
-      setStatus('on', 'מסונכרן · ' + state.peers.length + ' מחוברים');
+      setHero(
+        'idle',
+        'לא מחובר לחברותא',
+        'הקלידו קוד — אותו קוד בדיוק אצל שני הצדדים — ולחצו התחברות.'
+      );
+    } else if (peers.length > 0) {
+      setStatus('on', 'מסונכרן · ' + peers.length + ' מחוברים');
+      setHero(
+        'linked',
+        peers.length === 1 ? 'מסונכרן עם החברותא' : 'מסונכרן · ' + peers.length + ' מחוברים',
+        'כשאחד מכם עובר דף, השני עובר איתו.'
+      );
     } else {
       setStatus('on', 'ממתין לחברותא');
+      setHero(
+        'waiting',
+        'ממתין לחברותא',
+        'אתם מחוברים לקוד. ברגע שהצד השני יקליד אצלו את אותו קוד, מקום הלימוד יסתנכרן.'
+      );
     }
 
-    renderPeers(state.peers);
+    renderPeers(peers, state.remote);
     el.localSpot.textContent = describeSpot(state.localLocation);
     el.remoteSpot.textContent = state.remote
       ? describeSpot(state.remote.location) +
@@ -131,21 +208,82 @@
     }
   }
 
+  /**
+   * מה להציג כשאין תשובה מהמתאם.
+   *
+   * כל המקרים נראים למשתמש אותו דבר — לשונית ריקה — אבל הפתרון שונה
+   * לגמרי בכל אחד, ולכן ההסבר נגזר מסוג הכשל ש-`Companion` מדווח ולא
+   * מניח שהמתאם אינו פועל. הודעה שגויה כאן שולחת את המשתמש להתקין
+   * מחדש תוכנה שרצה כבר, במקום להדליק מתג באוצריא.
+   */
+  const FAILURES = {
+    permission: {
+      status: 'אין הרשאת רשת',
+      title: 'הרשאת הרשת של התוסף כבויה',
+      sub: 'התוסף מדבר עם המתאם דרך כתובת מקומית במחשב, וההרשאה לכך חסומה.',
+      bannerTitle: 'צריך להדליק לתוסף "גישה לרשת"',
+      html:
+        'הסנכרון עובר דרך תוכנה קטנה שרצה על המחשב הזה, ולכן התוסף צריך ' +
+        'את הרשאת <code>גישה לשירותים מקומיים</code>. הדליקו אותה ב' +
+        '<b>הגדרות › כלים › ניהול תוספים</b>, בשורת החברותא — המתג ' +
+        '<code>גישה לרשת</code>. ההרשאה הזאת אינה נותנת לתוסף גישה לאינטרנט.',
+    },
+    unsupported: {
+      status: 'גרסת אוצריא ישנה',
+      title: 'אוצריא כאן ישנה מדי',
+      sub: 'הלשונית משתמשת בממשק רשת שנוסף באוצריא 0.9.97.',
+      bannerTitle: 'צריך לעדכן את אוצריא',
+      html:
+        'התוסף מדבר עם המתאם דרך <code>network.fetchStream</code>, שקיים ' +
+        'מאוצריא <b>0.9.97</b> ומעלה. עדכנו את אוצריא, והלשונית תתחבר לבד.',
+    },
+    allowlist: {
+      status: 'הכתובת חסומה',
+      title: 'אוצריא חסמה את הפנייה למתאם',
+      sub: 'הכתובת המקומית של המתאם אינה ברשימת ההיתר של התוסף.',
+      bannerTitle: 'הכתובת אינה ברשימת ההיתר',
+      html:
+        'זו תקלה בתוסף עצמו ולא במחשב שלכם — <code>127.0.0.1</code> אמור ' +
+        'להיות מוצהר ב-<code>network.allowlist</code> של התוסף. דווחו על כך, ' +
+        'ובינתיים נסו להתקין מחדש את גרסת התוסף האחרונה.',
+    },
+    notFound: {
+      status: 'המתאם אינו פועל',
+      title: 'המתאם אינו פועל',
+      sub: 'הסנכרון עובד דרך תוכנה קטנה שרצה בצד אוצריא, והיא אינה פועלת כרגע.',
+      bannerTitle: 'לא נמצא מתאם חברותא על המחשב הזה',
+      html:
+        'הסנכרון עובד דרך תוכנה קטנה שרצה בצד אוצריא. התקינו את ' +
+        '<code>מתאם חברותא</code> והפעילו אותו — הוא עולה עם המחשב ופועל ' +
+        'ברקע. אחרי ההתקנה הלשונית הזאת תזהה אותו לבד.<br>' +
+        'אם התקנתם והפעלתם, המתאם רץ בלי חלון — היומן שלו ב' +
+        '<code>%LOCALAPPDATA%\\Chavruta\\companion.log</code> אומר אם הוא עלה ' +
+        'ועל איזה פורט.',
+    },
+  };
+
+  function showFailure(kind) {
+    const info = FAILURES[kind] || FAILURES.notFound;
+    setStatus('off', info.status);
+    setHero('error', info.title, info.sub);
+    setRoomChip('');
+    // בלי מתאם אין מחוברים ואין מקום מרוחק — הכרטיסים נשארים במצב ריק
+    // מפורש ולא מציגים נתונים מלפני שהמתאם נפל.
+    renderPeers([], null);
+    el.localSpot.textContent = '—';
+    el.remoteSpot.textContent = '—';
+    // מצב ה-LAN הוא דיווח של המתאם; בלי תשובה ממנו אין מה לטעון עליו.
+    clearBanner('lan');
+    banner('companion', 'error', info.bannerTitle, info.html);
+  }
+
   async function refresh() {
     try {
       const state = await Companion.hello();
       clearBanner('companion');
       renderState(state);
     } catch (e) {
-      setStatus('off', 'המתאם אינו פועל');
-      banner(
-        'companion',
-        'error',
-        'לא נמצא מתאם חברותא על המחשב הזה',
-        'הסנכרון עובד דרך תוכנה קטנה שרצה בצד אוצריא. התקינו את ' +
-          '<code>מתאם חברותא</code> והפעילו אותו — הוא עולה עם המחשב ופועל ' +
-          'ברקע. אחרי ההתקנה הלשונית הזאת תזהה אותו לבד.'
-      );
+      showFailure(e && e.kind);
     }
   }
 
@@ -177,6 +315,7 @@
     try {
       await Companion.setRoom(code);
       await Otzaria.call('storage.set', { key: ROOM_KEY, value: code });
+      activeRoom = code;
       Otzaria.call('ui.showSuccess', { message: 'מחובר לחברותא' });
       await refresh();
     } catch (e) {
@@ -190,6 +329,7 @@
     el.leaveButton.disabled = true;
     try {
       await Companion.setRoom('');
+      activeRoom = '';
       Otzaria.call('ui.showMessage', { message: 'יצאת מהחברותא' });
       await refresh();
     } catch (e) {
@@ -228,6 +368,15 @@
     if (event.key === 'Enter') join();
   });
 
+  // פס הכותרת מקבל צללית ברגע שהתוכן נגלל מתחתיו, כמו הסרגל של אוצריא.
+  el.appContent.addEventListener(
+    'scroll',
+    function () {
+      el.topbar.classList.toggle('scrolled', el.appContent.scrollTop > 2);
+    },
+    { passive: true }
+  );
+
   // --- מחזור חיים ----------------------------------------------------------
 
   Otzaria.on('plugin.boot', async function (payload) {
@@ -262,6 +411,7 @@
       const stored = await Otzaria.call('storage.get', { key: ROOM_KEY });
       if (stored && stored.success && typeof stored.data === 'string') {
         el.roomInput.value = stored.data;
+        activeRoom = stored.data;
       }
     } catch (e) {
       // אין קוד שמור — השדה נשאר ריק.

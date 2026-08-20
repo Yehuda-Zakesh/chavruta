@@ -23,6 +23,32 @@ const Companion = (function () {
   let port = null;
 
   /**
+   * מסווג כשל של קריאת רשת, כדי שהמסך יוכל להסביר אותו נכון.
+   *
+   * `network` הוא הכשל היחיד שמשמעותו "אין מתאם על הפורט הזה"; כל השאר
+   * הם חסימה בצד אוצריא שתחזור זהה בכל פורט בטווח, ולכן אסור לתרגם
+   * אותם ל"המתאם אינו פועל" — הודעה שתשלח את המשתמש לחפש תקלה במקום
+   * הלא נכון. אוצריא מעבירה לזרם את הודעת השגיאה בלבד, בלי שדה ה-`code`
+   * שלה, ולכן הסיווג נעשה לפי הטקסט.
+   */
+  function classify(message) {
+    const text = String(message || '');
+    if (/הרשא|permission/i.test(text)) return 'permission';
+    if (/רשימת ההיתר|forbidden/i.test(text)) return 'allowlist';
+    if (/async iterable|asyncIterator|unknown method|unsupported|לא נתמך/i.test(text)) {
+      return 'unsupported';
+    }
+    return 'network';
+  }
+
+  /** שגיאה נושאת `kind`, בשפה שהמסך יודע לתרגם להסבר למשתמש. */
+  function failure(kind, message) {
+    const error = new Error(message);
+    error.kind = kind;
+    return error;
+  }
+
+  /**
    * הנקודה היחידה בתוסף שמדברת HTTP.
    *
    * `network.fetchStream` רץ בצד אוצריא (Flutter) ולכן אינו כפוף ל-CORS,
@@ -53,13 +79,15 @@ const Companion = (function () {
         if (typeof chunk.body === 'string') body += chunk.body;
       }
     } catch (e) {
-      throw e instanceof Error ? e : new Error('קריאת הרשת נכשלה');
+      const error = e instanceof Error ? e : new Error('קריאת הרשת נכשלה');
+      if (!error.kind) error.kind = classify(error.message);
+      throw error;
     }
 
     try {
       return JSON.parse(body);
     } catch (e) {
-      throw new Error('תשובה לא קריאה מהמתאם');
+      throw failure('network', 'תשובה לא קריאה מהמתאם');
     }
   }
 
@@ -105,6 +133,12 @@ const Companion = (function () {
           return hello;
         }
       } catch (e) {
+        // חסימה בצד אוצריא (הרשאה, allowlist, גרסה) תחזור זהה בכל פורט,
+        // ולכן עוצרים את הסריקה ומדווחים עליה כמו שהיא.
+        if (e && e.kind && e.kind !== 'network') {
+          port = null;
+          throw e;
+        }
         // פורט שאין מאחוריו מתאם — ממשיכים לבא בטווח.
       }
     }
@@ -115,7 +149,7 @@ const Companion = (function () {
   /** מריץ בקשה, ואם המתאם עוד לא נמצא — מחפש אותו קודם. */
   async function withCompanion(run) {
     if (port === null && !(await discover())) {
-      throw new Error('לא נמצא מתאם חברותא על המחשב הזה');
+      throw failure('notFound', 'לא נמצא מתאם חברותא על המחשב הזה');
     }
     try {
       return await run();
