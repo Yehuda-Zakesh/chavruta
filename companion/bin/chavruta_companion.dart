@@ -24,7 +24,9 @@ const String usage = '''
   --name <שם>      שם המכשיר כפי שיוצג לחברותא.
   --data-dir <נתיב> תיקיית קונפיג ולוג. ברירת מחדל: %LOCALAPPDATA%\\Chavruta
   --quiet          בלי הדפסה למסך (הלוג עדיין נכתב לקובץ).
-  --hidden         הסתרת חלון הקונסולה, לריצה בעליית המחשב. מפעיל גם --quiet.
+  --console        השארת חלון הקונסולה גלוי, לצפייה חיה בלוג בפיתוח.
+  --hidden         נשאר לתאימות לאחור; שקול ל-`--quiet`. חלון הקונסולה
+                   מוסתר כברירת מחדל כך או כך.
   --version        הדפסת גרסה ויציאה.
   --help           הדפסת עזרה זו.
 
@@ -39,7 +41,17 @@ class _Args {
   String? name;
   String? dataDir;
   bool quiet = false;
-  bool hidden = false;
+  bool console = false;
+}
+
+/// כתיבה ל-stdout/stderr שלא מתפוצצת אם הקונסולה כבר הוסתרה (או שלא
+/// הייתה כזו מעולם). מוגן ליתר ביטחון — בפועל תמיד יש כאן קונסולה
+/// אמיתית, רק מוסתרת, כך שהכתיבה מצליחה; זה נועד למקרה שהיא נחסמה
+/// בדרך אחרת (כלי אבטחה, למשל).
+void _safePrint(IOSink sink, String text) {
+  try {
+    sink.write(text);
+  } catch (_) {}
 }
 
 /// מפענח את שורת הפקודה. מחזיר `null` אם צריך לצאת (עזרה/גרסה/שגיאה),
@@ -50,7 +62,7 @@ _Args? _parseArgs(List<String> argv) {
     final arg = argv[i];
     String? next() {
       if (i + 1 >= argv.length) {
-        stderr.writeln('חסר ערך אחרי $arg');
+        _safePrint(stderr, 'חסר ערך אחרי $arg\n');
         return null;
       }
       return argv[++i];
@@ -59,18 +71,20 @@ _Args? _parseArgs(List<String> argv) {
     switch (arg) {
       case '--help':
       case '-h':
-        stdout.write(usage);
+        _safePrint(stdout, usage);
         return null;
       case '--version':
       case '-v':
-        stdout.writeln(companionVersion);
+        _safePrint(stdout, '$companionVersion\n');
         return null;
       case '--quiet':
       case '-q':
         args.quiet = true;
+      case '--console':
+        args.console = true;
       case '--hidden':
-        // חלון מוסתר ואין לאן להדפיס; הכתיבה לקובץ הלוג ממשיכה כרגיל.
-        args.hidden = true;
+        // לתאימות לאחור עם קיצורי דרך/רישום Run ישנים שמעבירים את הדגל
+        // הזה במפורש. ההסתרה עצמה כברירת מחדל, לא תלויה בו.
         args.quiet = true;
       case '--room':
         final value = next();
@@ -85,8 +99,8 @@ _Args? _parseArgs(List<String> argv) {
         if (value == null) return null;
         args.dataDir = value;
       default:
-        stderr.writeln('אפשרות לא מוכרת: $arg');
-        stderr.write(usage);
+        _safePrint(stderr, 'אפשרות לא מוכרת: $arg\n');
+        _safePrint(stderr, usage);
         return null;
     }
   }
@@ -96,7 +110,10 @@ _Args? _parseArgs(List<String> argv) {
 Future<void> main(List<String> argv) async {
   final args = _parseArgs(argv);
   if (args == null) return;
-  if (args.hidden) hideConsoleWindow();
+  // מוסתר כברירת מחדל, לא רק עם --hidden: המתאם הוא תוכנית רקע, ומשתמש
+  // שמריץ את ה-exe בלחיצה כפולה לא צריך לראות חלון קונסולה בשביל זה.
+  // --console הוא היציאה המפורשת למי שרוצה לצפות בלוג בזמן פיתוח.
+  if (!args.console) hideConsoleWindow();
 
   final storageDir = args.dataDir == null
       ? CompanionConfig.defaultStorageDir
@@ -170,7 +187,7 @@ Future<void> main(List<String> argv) async {
 }
 
 /// לוג לקובץ ולמסך. הקובץ הוא הדבר שמאפשר לאבחן מתאם שרץ ברקע בלי
-/// חלון קונסולה, ולכן הכתיבה אליו לא תלויה ב---quiet.
+/// חלון קונסולה, ולכן הכתיבה אליו לא תלויה בדגל `--quiet`.
 class _Logger {
   _Logger._(this._file, this._toStdout);
 
@@ -196,7 +213,14 @@ class _Logger {
 
   void call(String message) {
     final line = '[${DateTime.now().toIso8601String()}] $message';
-    if (_toStdout) stdout.writeln(line);
+    if (_toStdout) {
+      try {
+        stdout.writeln(line);
+      } catch (_) {
+        // ליתר ביטחון: אם מסיבה כלשהי אין stdout תקין. הלוג לקובץ
+        // ממשיך כרגיל.
+      }
+    }
     try {
       _file?.writeln(line);
     } catch (_) {
