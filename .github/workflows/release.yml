@@ -27,15 +27,21 @@ jobs:
         shell: pwsh
         run: |
           $manifest = Get-Content plugin/manifest.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          # שתי גרסאות, ובכוונה: המניפסט חייב SemVer מלא — אוצריא פוסלת מניפסט
+          # שאינו x.y.z, וגם pubspec של Dart דורש שלושה מספרים. הגרסה שהמשתמש
+          # רואה — שם ה-Release ושם המתקין — מוותרת על אפס מיותר בסוף, ולכן
+          # 1.0.0 מתפרסמת כ-1.0. אותו כלל נמצא גם ב-tool\build.ps1.
           $version = $manifest.version
-          # תג v1.2.3 חייב להתאים לגרסה שבמניפסט, אחרת השחרור מבלבל.
+          $display = $version -replace '\.0$', ''
+          # התג חייב להתאים לאחת משתי הצורות, אחרת השחרור מבלבל.
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
-            if ($tag -ne $version) {
+            if ($tag -ne $version -and $tag -ne $display) {
               throw "התג v$tag אינו תואם ל-version שבמניפסט ($version)"
             }
           }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "display=$display" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: המתאם — בדיקות וקימפול
         shell: pwsh
@@ -68,16 +74,19 @@ jobs:
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          DISPLAY: ${{ steps.version.outputs.display }}
         run: |
           $dist = Join-Path $PWD 'dist'
+          # שם המתקין נושא את הגרסה המוצגת; קובץ ה-otzplugin נשאר בשם ה-SemVer
+          # המלא, כדי שיתאים ל-version שבתוך המניפסט שלו.
           $version = $env:VERSION
-          & "$env:ISCC" "/DMyAppVersion=$version" "/DDistDir=$dist" "/DPluginFile=chavruta-$version.otzplugin" installer\chavruta.iss
+          & "$env:ISCC" "/DMyAppVersion=$env:DISPLAY" "/DDistDir=$dist" "/DPluginFile=chavruta-$version.otzplugin" installer\chavruta.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC נכשל" }
 
       - name: העלאת תוצרים
         uses: actions/upload-artifact@v4
         with:
-          name: chavruta-${{ steps.version.outputs.version }}-windows
+          name: chavruta-${{ steps.version.outputs.display }}-windows
           path: |
             dist/ChavrutaCompanion.exe
             dist/*.otzplugin
@@ -88,7 +97,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: חברותא ${{ steps.version.outputs.version }}
+          name: חברותא ${{ steps.version.outputs.display }}
           generate_release_notes: true
           files: |
             dist/chavruta-setup-*.exe

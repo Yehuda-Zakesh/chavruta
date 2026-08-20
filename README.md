@@ -108,9 +108,15 @@
 
 - כל דחיפה ל-`main` — [CI](.github/workflows/ci.yml) מריץ analyze ובדיקות,
   ומעלה `ChavrutaCompanion.exe` ו-`.otzplugin` כ-artifact להורדה.
-- תג `v<גרסה>` (למשל `v0.1.0`, חייב להתאים ל-`version` שבמניפסט) —
-  [Release](.github/workflows/release.yml) בונה גם את המתקין ותולה את הכול
-  ב-GitHub Release.
+- תג `v<גרסה>` — [Release](.github/workflows/release.yml) בונה גם את המתקין
+  ותולה את הכול ב-GitHub Release.
+
+`version` שבמניפסט חייב להיות SemVer מלא: אוצריא פוסלת מניפסט שאינו `x.y.z`,
+וגם `pubspec.yaml` של Dart דורש שלושה מספרים (הבדיקה `version_test.dart`
+מוודאת ששניהם זהים). הגרסה שהמשתמש רואה — שם ה-Release ושם המתקין — מוותרת
+על אפס מיותר בסוף, ולכן `1.0.0` מתפרסמת כ-`1.0`, והתג יכול להיות `v1.0` או
+`v1.0.0`. קובץ ה-`.otzplugin` נשאר בשם ה-SemVer המלא, כדי שיתאים למניפסט
+שבתוכו.
 
 בנייה מקומית, כשצריך:
 
