@@ -742,6 +742,79 @@ body {
   min-width: 12em;
 }
 
+/* --- מתג -------------------------------------------------------------
+ * ה-checkbox האמיתי נשאר במקומו ורק מוסתר לעין, כדי שההתנהגות המקורית —
+ * מקלדת, focus, קורא מסך — תמשיך לעבוד. הפס והכפתור הם תצוגה בלבד
+ * (aria-hidden), והם נגררים מהמצב :checked שלו.
+ * ------------------------------------------------------------------- */
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 2.5em;
+  height: 1.4em;
+  border: 1.5px solid var(--color-outline-variant);
+  border-radius: var(--radius-pill);
+  background: var(--color-secondary-subtle);
+  transition: background 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+/* RTL: הכפתור מתחיל בימין, וזז שמאלה כשהמתג נדלק. */
+.switch-knob {
+  position: absolute;
+  top: 50%;
+  right: 0.17em;
+  width: 0.95em;
+  height: 0.95em;
+  border-radius: var(--radius-pill);
+  background: var(--color-on-surface-variant);
+  transform: translateY(-50%);
+  transition: right 0.16s ease, background 0.15s ease;
+}
+
+.switch input:checked + .switch-track {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.switch input:checked + .switch-track .switch-knob {
+  right: calc(100% - 1.12em);
+  background: var(--color-on-primary);
+}
+
+.switch input:focus-visible + .switch-track {
+  box-shadow: 0 0 0 3px var(--color-primary-subtle);
+}
+
+.switch input:disabled + .switch-track {
+  opacity: 0.5;
+}
+
+.switch input:disabled ~ .switch-text {
+  opacity: 0.6;
+}
+
+.switch-text {
+  color: var(--color-on-surface-variant);
+  font-size: 0.92em;
+}
+
 /* --- שלבים: איך זה עובד --------------------------------------------- */
 
 .steps {

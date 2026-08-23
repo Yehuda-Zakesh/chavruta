@@ -36,11 +36,17 @@
     remoteSpot: document.getElementById('remoteSpot'),
     nameInput: document.getElementById('nameInput'),
     nameButton: document.getElementById('nameButton'),
+    companionCard: document.getElementById('companionCard'),
+    startupToggle: document.getElementById('startupToggle'),
+    startupText: document.getElementById('startupText'),
   };
 
   let refreshTimer = null;
   let nameDirty = false;
   let ownsEngine = false;
+
+  /** האם מצב "עולה עם המחשב" נקרא מהמתאם מאז שהוא נמצא. */
+  let startupLoaded = false;
 
   /** הקוד שהזיווג הנוכחי נעשה בו — למען ה-chip שבכרטיס הראשי. המתאם מדווח
    *  אם יש זיווג, אך לא את הקוד עצמו, ולכן הוא נזכר כאן. */
@@ -275,6 +281,39 @@
     // מצב ה-LAN הוא דיווח של המתאם; בלי תשובה ממנו אין מה לטעון עליו.
     clearBanner('lan');
     banner('companion', 'error', info.bannerTitle, info.html);
+    // בלי מתאם אין מי שיקרא את הרישום, ולכן גם אין מה להציג עליו.
+    startupLoaded = false;
+    el.companionCard.classList.add('hidden');
+  }
+
+  /**
+   * מצב "עולה עם המחשב", כפי שהמתאם מדווח אותו.
+   *
+   * `supported: false` = אין מה להציע במחשב הזה (המתאם רץ מתוך פיתוח, או
+   * לא ב-Windows), ואז הכרטיס נשאר מוסתר — מתג שאינו יכול לעבוד גרוע
+   * ממתג שאינו מוצג.
+   */
+  function renderStartup(state) {
+    const supported = !!(state && state.supported);
+    el.companionCard.classList.toggle('hidden', !supported);
+    if (!supported) return;
+
+    el.startupToggle.checked = !!state.enabled;
+    el.startupText.textContent = state.enabled
+      ? 'עולה עם הכניסה למחשב, ורץ ברקע בלי חלון'
+      : 'כבוי — צריך להפעיל את המתאם בעצמכם בכל הדלקה';
+  }
+
+  async function loadStartup() {
+    try {
+      renderStartup(await Companion.startup());
+      startupLoaded = true;
+    } catch (e) {
+      // גרסת מתאם שאינה מכירה את /startup, או כשל רשת. אין כאן מה
+      // להודיע למשתמש — פשוט אין מתג.
+      startupLoaded = false;
+      el.companionCard.classList.add('hidden');
+    }
   }
 
   async function refresh() {
@@ -282,6 +321,9 @@
       const state = await Companion.hello();
       clearBanner('companion');
       renderState(state);
+      // פעם אחת לכל חיבור למתאם: הרישום אינו משתנה מעצמו, ואין טעם
+      // לתחקר אותו בכל רענון.
+      if (!startupLoaded) await loadStartup();
     } catch (e) {
       showFailure(e && e.kind);
     }
@@ -358,12 +400,48 @@
     }
   }
 
+  /**
+   * הדלקה או כיבוי של עלייה עם המחשב.
+   *
+   * את הרישום עצמו עושה המתאם — ל-WebView של תוסף אין דרך לגעת ברישום
+   * של Windows, וגם לא צריך. התשובה היא המצב **בפועל** אחרי השינוי,
+   * ולכן כשל שקט (מדיניות ארגונית, כלי אבטחה) מוצג כמו שהוא במקום
+   * להשאיר מתג שנראה דלוק ולא עושה כלום.
+   */
+  async function toggleStartup() {
+    const wanted = el.startupToggle.checked;
+    el.startupToggle.disabled = true;
+    el.startupText.textContent = 'מעדכן…';
+    try {
+      const state = await Companion.setStartup(wanted);
+      renderStartup(state);
+      if (state && state.supported && state.enabled === wanted) {
+        Otzaria.call('ui.showSuccess', {
+          message: wanted
+            ? 'המתאם יעלה עם המחשב'
+            : 'המתאם לא יעלה עם המחשב',
+        });
+      } else {
+        notifyError(
+          'Windows לא קיבל את השינוי' +
+            (state && state.reason ? ': ' + state.reason : '.')
+        );
+      }
+    } catch (e) {
+      notifyError('שינוי העלייה עם המחשב נכשל: ' + e.message);
+      await loadStartup();
+    } finally {
+      el.startupToggle.disabled = false;
+    }
+  }
+
   el.joinButton.addEventListener('click', join);
   el.leaveButton.addEventListener('click', leave);
   el.nameButton.addEventListener('click', saveName);
   el.nameInput.addEventListener('input', function () {
     nameDirty = true;
   });
+  el.startupToggle.addEventListener('change', toggleStartup);
   el.roomInput.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') join();
   });

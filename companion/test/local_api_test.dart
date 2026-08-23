@@ -4,9 +4,11 @@ import 'dart:io';
 import 'package:chavruta_companion/config.dart';
 import 'package:chavruta_companion/local_api.dart';
 import 'package:chavruta_companion/protocol.dart';
+import 'package:chavruta_companion/startup_registration.dart';
 import 'package:chavruta_companion/sync_hub.dart';
 import 'package:test/test.dart';
 
+import 'support/fake_reg.dart';
 import 'support/fake_transport.dart';
 import 'support/temp_config.dart';
 
@@ -50,13 +52,29 @@ void main() {
   late SyncHub hub;
   late LocalApi api;
   late _Client client;
+  late FakeReg reg;
 
   setUp(() async {
     temp = await TempConfig.create();
     config = temp.config(roomCode: 'חדר');
     transport = FakeTransport();
     hub = SyncHub(config: config, transport: transport);
-    api = LocalApi(hub: hub, version: '9.9.9');
+
+    // exe מדומה בתיקייה הזמנית, כדי ש-/startup ייחשב נתמך בבדיקה בלי
+    // לגעת ברישום האמיתי של מריץ הבדיקות.
+    final exe = '${temp.dir.path}${Platform.pathSeparator}$companionExeName';
+    await File(exe).writeAsString('exe');
+    reg = FakeReg();
+
+    api = LocalApi(
+      hub: hub,
+      version: '9.9.9',
+      startup: StartupRegistration(
+        runReg: reg.run,
+        executable: exe,
+        isWindows: true,
+      ),
+    );
 
     if (!await api.start()) {
       // כל הפורטים בטווח תפוסים — כנראה מתאם אמיתי שרץ על המכונה.
@@ -235,5 +253,39 @@ void main() {
       expect(response.json['hasUpdate'], isTrue);
       expect(response.json['remoteSequence'], 1);
     }, timeout: const Timeout(Duration(seconds: 10)));
+  });
+
+  group('/startup', () {
+    test('קורא ומחליף את העלייה עם המחשב', () async {
+      final initial = await client.request('GET', '/startup');
+      expect(initial.json['supported'], isTrue);
+      expect(initial.json['enabled'], isFalse);
+
+      final on = await client.request(
+        'POST',
+        '/startup',
+        body: {'enabled': true},
+      );
+      expect(on.json['enabled'], isTrue);
+      expect(reg.value, isNotNull);
+
+      final off = await client.request(
+        'POST',
+        '/startup',
+        body: {'enabled': false},
+      );
+      expect(off.json['enabled'], isFalse);
+      expect(reg.value, isNull);
+    });
+
+    test('בלי enabled בוליאני נדחה', () async {
+      final response = await client.request(
+        'POST',
+        '/startup',
+        body: {'enabled': 'yes'},
+      );
+      expect(response.status, 400);
+      expect(reg.calls, isEmpty);
+    });
   });
 }

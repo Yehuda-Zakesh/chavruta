@@ -165,6 +165,42 @@
             </div>
           </section>
 
+          <!--
+            הכרטיס מוצג רק כשהמתאם מדווח שהרישום נתמך על המחשב הזה. את
+            הרישום עצמו עושה המתאם; התוסף רק מבקש ממנו ב-loopback.
+          -->
+          <section class="card hidden" id="companionCard">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3.4v7.2" />
+                  <path d="M7.6 6.4a6.4 6.4 0 1 0 8.8 0" />
+                </svg>
+              </span>
+              <span class="card-title">המתאם</span>
+            </div>
+
+            <div class="detail">
+              <span class="detail-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5.5 5.6h13v10.2h-13z" />
+                  <path d="M9.4 19.4h5.2" />
+                  <path d="M12 15.8v3.6" />
+                </svg>
+              </span>
+              <span class="detail-label">עולה עם המחשב</span>
+              <span class="detail-field">
+                <label class="switch">
+                  <input type="checkbox" id="startupToggle" />
+                  <span class="switch-track" aria-hidden="true">
+                    <span class="switch-knob"></span>
+                  </span>
+                  <span class="switch-text" id="startupText">בודק…</span>
+                </label>
+              </span>
+            </div>
+          </section>
+
           <section class="card">
             <div class="card-head">
               <span class="card-icon" aria-hidden="true">

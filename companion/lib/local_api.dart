@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'protocol.dart';
+import 'startup_registration.dart';
 import 'sync_hub.dart';
 
 /// כמה זמן בקשת `/events` נשארת פתוחה לפני שהיא חוזרת ריקה.
@@ -18,11 +19,20 @@ const Duration longPollTimeout = Duration(seconds: 25);
 /// Flutter ואינו כפוף ל-CORS, ולכן דפי אינטרנט בדפדפן לא יכולים לדבר
 /// עם השרת הזה.
 class LocalApi {
-  LocalApi({required this.hub, required this.version, this.onLog});
+  LocalApi({
+    required this.hub,
+    required this.version,
+    this.onLog,
+    StartupRegistration? startup,
+  }) : startup = startup ?? StartupRegistration();
 
   final SyncHub hub;
   final String version;
   final void Function(String message)? onLog;
+
+  /// רישום העלייה עם המחשב. המתאם הוא שנוגע ברישום, ולא התוסף: ל-WebView
+  /// של תוסף אוצריא אין — ובצדק — דרך לגעת ברישום או להפעיל תוכניות.
+  final StartupRegistration startup;
 
   HttpServer? _server;
 
@@ -74,6 +84,10 @@ class LocalApi {
           await _handleRoom(request);
         case 'POST /name':
           await _handleName(request);
+        case 'GET /startup':
+          await _respondJson(request, (await startup.read()).toJson());
+        case 'POST /startup':
+          await _handleStartup(request);
         default:
           await _respondJson(request, {
             'error': 'unknown endpoint',
@@ -155,6 +169,26 @@ class LocalApi {
     }
     await hub.setDeviceName(name);
     await _respondJson(request, hub.snapshot());
+  }
+
+  /// מדליק או מכבה עלייה עם המחשב. התשובה היא המצב בפועל אחרי השינוי,
+  /// ולכן התוסף לא צריך לנחש אם השינוי נתפס.
+  Future<void> _handleStartup(HttpRequest request) async {
+    final body = await _readJsonBody(request);
+    final enabled = body is Map ? body['enabled'] : null;
+    if (enabled is! bool) {
+      await _respondJson(request, {
+        'error': 'enabled must be a boolean',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
+    final state = await startup.setEnabled(enabled);
+    onLog?.call(
+      'עלייה עם המחשב: התבקש ${enabled ? "מופעל" : "כבוי"}, '
+      'בפועל ${state.enabled ? "מופעל" : "כבוי"}'
+      '${state.reason == null ? "" : " (${state.reason})"}',
+    );
+    await _respondJson(request, state.toJson());
   }
 
   Future<Object?> _readJsonBody(HttpRequest request) async {

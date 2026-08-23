@@ -212,5 +212,30 @@ const Companion = (function () {
         return request('/name', { method: 'POST', body: { name: name } });
       });
     },
+
+    /**
+     * האם המתאם עולה עם המחשב.
+     *
+     * `{ supported, enabled }`. `supported: false` = אין מה להציע כאן
+     * (המתאם רץ מתוך פיתוח, או לא ב-Windows), ואז אין להציג מתג.
+     *
+     * הרישום עצמו נעשה בצד המתאם. לתוסף אין — ובצדק — דרך לגעת ברישום
+     * של Windows או להפעיל תוכניות; הוא רק שולח את הבקשה ב-loopback.
+     */
+    startup: function () {
+      return withCompanion(function () {
+        return request('/startup');
+      });
+    },
+
+    /** הדלקה או כיבוי של עלייה עם המחשב. מחזיר את המצב בפועל. */
+    setStartup: function (enabled) {
+      return withCompanion(function () {
+        return request('/startup', {
+          method: 'POST',
+          body: { enabled: enabled },
+        });
+      });
+    },
   };
 })();
