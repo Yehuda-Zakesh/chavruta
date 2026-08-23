@@ -29,10 +29,11 @@ jobs:
           $manifest = Get-Content plugin/manifest.json -Raw -Encoding UTF8 | ConvertFrom-Json
           # שתי גרסאות, ובכוונה: המניפסט חייב SemVer מלא — אוצריא פוסלת מניפסט
           # שאינו x.y.z, וגם pubspec של Dart דורש שלושה מספרים. הגרסה שהמשתמש
-          # רואה — שם ה-Release ושם המתקין — מוותרת על אפס מיותר בסוף, ולכן
-          # 1.0.0 מתפרסמת כ-1.0. אותו כלל נמצא גם ב-tool\build.ps1.
+          # רואה — שם ה-Release ושם המתקין — היא מספר רץ, ולכן היא מוותרת על
+          # כל האפסים המיותרים בסוף: 2.0.0 מתפרסמת כ-2. אותו כלל נמצא גם
+          # ב-tool\build.ps1.
           $version = $manifest.version
-          $display = $version -replace '\.0$', ''
+          $display = $version -replace '(\.0)+$', ''
           # התג חייב להתאים לאחת משתי הצורות, אחרת השחרור מבלבל.
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''

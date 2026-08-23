@@ -51,9 +51,10 @@ New-Item -ItemType Directory -Force $distDir | Out-Null
 
 $manifest = Get-Content (Join-Path $root "plugin\manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $version = $manifest.version
-# הגרסה המוצגת מוותרת על אפס מיותר בסוף, ולכן 1.0.0 מתפרסמת כ-1.0. כך גם
+# הגרסה המוצגת מוותרת על *כל* האפסים המיותרים בסוף, ולכן 2.0.0 מתפרסמת
+# כ-2 — הגרסאות לעין המשתמש הן מספר רץ. כך גם
 # ב-.github/workflows/release.yml, שבונה את השחרור בפועל.
-$display = $version -replace '\.0$', ''
+$display = $version -replace '(\.0)+$', ''
 
 Write-Host "חברותא $display" -ForegroundColor Green
 Write-Host "פלט: $distDir"

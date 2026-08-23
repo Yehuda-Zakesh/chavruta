@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.yehudazakesh.chavruta",
   "name": "חברותא",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "לומדים יחד בשני מחשבים: מקום הלימוד מסתנכרן ביניכם דרך הרשת המקומית.",
   "author": "יהודה זקש",
   "stability": "stable",
