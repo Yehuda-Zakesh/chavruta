@@ -53,6 +53,12 @@ jobs:
           dart test
           dart compile exe bin/chavruta_companion.dart -o ../dist/ChavrutaCompanion.exe
 
+      # המשגר הוא מה שנרשם לעלייה עם המחשב, כדי שלא ייווצר חלון קונסולה.
+      # -Required: שחרור בלי משגר הוא באג, ולא ויתור שקט.
+      - name: המשגר — קימפול
+        shell: pwsh
+        run: ./launcher/build.ps1 -Output dist -Required
+
       - name: התוסף — אריזה
         shell: pwsh
         run: ./tool/pack-plugin.ps1 -Output dist
@@ -80,7 +86,7 @@ jobs:
           # שם המתקין נושא את הגרסה המוצגת; קובץ ה-otzplugin נשאר בשם ה-SemVer
           # המלא, כדי שיתאים ל-version שבתוך המניפסט שלו.
           $version = $env:VERSION
-          & "$env:ISCC" "/DMyAppVersion=$env:DISPLAY" "/DDistDir=$dist" "/DPluginFile=chavruta-$version.otzplugin" installer\chavruta.iss
+          & "$env:ISCC" "/DMyAppVersion=$env:DISPLAY" "/DDistDir=$dist" "/DPluginFile=chavruta-$version.otzplugin" "/DLauncherFile=ChavrutaLauncher.exe" installer\chavruta.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC נכשל" }
 
       - name: העלאת תוצרים
@@ -89,6 +95,7 @@ jobs:
           name: chavruta-${{ steps.version.outputs.display }}-windows
           path: |
             dist/ChavrutaCompanion.exe
+            dist/ChavrutaLauncher.exe
             dist/*.otzplugin
             dist/chavruta-setup-*.exe
           if-no-files-found: error

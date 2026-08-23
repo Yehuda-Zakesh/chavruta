@@ -3,10 +3,12 @@
   בונה את חבילת ההפצה של חברותא: המתאם, התוסף והמתקין.
 
 .DESCRIPTION
-  שלושה שלבים, כל אחד מהם נעצר בשגיאה הראשונה:
+  ארבעה שלבים, כל אחד מהם נעצר בשגיאה הראשונה:
     1. המתאם  — pub get, analyze, test, ואז dart compile exe.
-    2. התוסף  — אריזה ל-.otzplugin דרך אוצריא (שכוללת ולידציית מניפסט ועיצוב).
-    3. המתקין — קימפול chavruta.iss ב-Inno Setup, אם הוא מותקן.
+    2. המשגר  — קימפול ב-MSVC, אם הוא מותקן. בלעדיו המתקין נופל חזרה
+                לרישום המתאם עצמו לעלייה (ואז יש חלון קונסולה).
+    3. התוסף  — אריזה ל-.otzplugin דרך אוצריא (שכוללת ולידציית מניפסט ועיצוב).
+    4. המתקין — קימפול chavruta.iss ב-Inno Setup, אם הוא מותקן.
 
   הפלט כולו נכתב לתיקיית dist.
 
@@ -23,6 +25,7 @@ param(
   [string]$Output = "dist",
   [string]$Otzaria = "",
   [switch]$SkipTests,
+  [switch]$SkipLauncher,
   [switch]$SkipPlugin,
   [switch]$SkipInstaller
 )
@@ -87,7 +90,22 @@ finally {
   Pop-Location
 }
 
-# --- 2. התוסף -------------------------------------------------------------
+# --- 2. המשגר -------------------------------------------------------------
+
+# המשגר הוא מה שנרשם לעלייה עם המחשב, כדי שלא ייווצר חלון קונסולה. הבנייה
+# שלו דורשת MSVC, ולכן היא רשות: בלעדיו המתקין רושם את המתאם עצמו (עם
+# --hidden), וההתקנה עובדת — עם חלון.
+$launcherFile = "ChavrutaLauncher.exe"
+if ($SkipLauncher) {
+  Write-Host ""
+  Write-Host "==> מדלג על בניית המשגר" -ForegroundColor DarkGray
+}
+else {
+  Step "בונה את המשגר"
+  & (Join-Path $root "launcher\build.ps1") -Output $distDir
+}
+
+# --- 3. התוסף -------------------------------------------------------------
 
 function Find-Otzaria {
   if ($Otzaria -ne "") {
@@ -141,7 +159,7 @@ else {
   Write-Host "  $target" -ForegroundColor Gray
 }
 
-# --- 3. המתקין ------------------------------------------------------------
+# --- 4. המתקין ------------------------------------------------------------
 
 function Find-Iscc {
   $fromPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
@@ -170,7 +188,12 @@ else {
     $packed = ""
     if (Test-Path (Join-Path $distDir $pluginFile)) { $packed = $pluginFile }
 
-    & $iscc "/DMyAppVersion=$display" "/DDistDir=$distDir" "/DPluginFile=$packed" (Join-Path $root "installer\chavruta.iss")
+    # שם ריק = הקובץ לא נבנה, והמתקין מדלג עליו בעצמו.
+    $launcher = ""
+    if (Test-Path (Join-Path $distDir $launcherFile)) { $launcher = $launcherFile }
+    else { Write-Warning "המשגר אינו ב-dist — המתקין ירשום את המתאם עצמו לעלייה, ויהיה חלון קונסולה." }
+
+    & $iscc "/DMyAppVersion=$display" "/DDistDir=$distDir" "/DPluginFile=$packed" "/DLauncherFile=$launcher" (Join-Path $root "installer\chavruta.iss")
     Assert-LastExitCode "ISCC"
   }
 }

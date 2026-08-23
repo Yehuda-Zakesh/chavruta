@@ -15,6 +15,7 @@
 |-----|-------|-----|
 | [`companion/`](companion/) | תוכנית Dart קטנה שרצה ברקע על כל מחשב | תוסף אוצריא רץ ב-WebView ואינו יכול לפתוח סוקט UDP או להאזין לרשת. המתאם עושה את זה בשבילו. |
 | [`plugin/`](plugin/) | תוסף אוצריא (`.otzplugin`) | קורא את מקום הקריאה מאוצריא, שולח אותו למתאם, ומנווט כשהחברותא זזה. |
+| [`launcher/`](launcher/) | קובץ C זעיר, בתת-מערכת חלונות | Dart מקמפל רק לתוכנית *קונסולה*, ולכן מתאם שנרשם לעלייה עם המחשב היה מוצג כחלון שחור. המשגר מפעיל אותו עם `CREATE_NO_WINDOW`, וחלון אינו נוצר כלל. הוא גם נושא את האייקון של החבילה, שתוצר `dart compile exe` אינו יכול לשאת. |
 
 ```
 אוצריא (מחשב א)                                    אוצריא (מחשב ב)
@@ -51,9 +52,9 @@
 
 ## התקנה
 
-1. **המתאם** — הריצו את `chavruta-companion-<גרסה>-windows.exe`. הוא מתקין
-   את המתאם, מרשם אותו לעלייה עם המשתמש (בלי חלון קונסולה), ומצרף את קובץ
-   התוסף.
+1. **המתאם** — הריצו את `chavruta-setup-<גרסה>.exe`. הוא מתקין את המתאם,
+   מרשם אותו לעלייה עם המשתמש דרך המשגר — כלומר **בלי חלון קונסולה בכלל,
+   גם לא הבזק** — ומצרף את קובץ התוסף.
 2. **התוסף** — התקינו את `chavruta-<גרסה>.otzplugin` באוצריא (לחיצה כפולה,
    או "התקנת תוסף מקובץ" במסך התוספים).
 3. **הרשאות** — אשרו לתוסף את `ריצה בעליית אוצריא` ו-`המשך ריצה ברקע`.
@@ -77,6 +78,10 @@
 
 אחרי הזיווג אין מה לעשות. פותחים ספר, וכשאחד מכם עובר מקום השני עובר איתו.
 לשונית התוסף מראה מי מחובר, איפה כל אחד נמצא, ואם המתאם פועל.
+
+בכרטיס **"המתאם"** שבלשונית יש מתג "עולה עם המחשב". הוא מדליק ומכבה את
+העלייה האוטומטית בכל רגע — בלי להריץ את המתקין מחדש — וכשהוא דלוק המתאם
+רץ ברקע לכל אורך המפגש, בלי חלון.
 
 מקום מסונכרן לפי **שם הספר והקטע** ולא לפי מזהה מספרי, כי המזהה המספרי שונה
 בין מחשב למחשב לפי סדר האינדוקס של הספרייה. ספר שאינו קיים בספרייה של הצד
@@ -107,7 +112,8 @@
 השחרור נבנה ב-GitHub Actions, לא במחשב:
 
 - כל דחיפה ל-`main` — [CI](.github/workflows/ci.yml) מריץ analyze ובדיקות,
-  ומעלה `ChavrutaCompanion.exe` ו-`.otzplugin` כ-artifact להורדה.
+  ומעלה `ChavrutaCompanion.exe`, `ChavrutaLauncher.exe` ו-`.otzplugin`
+  כ-artifact להורדה.
 - תג `v<גרסה>` — [Release](.github/workflows/release.yml) בונה גם את המתקין
   ותולה את הכול ב-GitHub Release.
 
@@ -127,8 +133,16 @@
 # רק המתאם, בלי אריזה ובלי מתקין
 .\tool\build.ps1 -SkipPlugin -SkipInstaller
 
+# בלי המשגר (למכונה בלי MSVC) — המתקין ייבנה, אבל עם חלון קונסולה
+.\tool\build.ps1 -SkipLauncher
+
 # אריזת התוסף בלבד, בלי אוצריא (מה ש-CI עושה)
 .\tool\pack-plugin.ps1
+
+# ייצור שני קובצי האייקון מחדש מתוך assets\icon-256.png: chavruta.ico
+# (16 עד 256, נשלח עם ההתקנה) ו-chavruta-small.ico (16 עד 64, מוטבע
+# במשגר). אינו חלק מהבנייה — מריצים רק כשמחליפים את תמונת המקור.
+.\tool\make-icon.ps1
 ```
 
 ### המתאם
@@ -136,7 +150,7 @@
 ```bash
 cd companion
 dart pub get
-dart test          # 67 בדיקות: פרוטוקול, hub, קונפיג, API מקומי
+dart test          # 80 בדיקות: פרוטוקול, hub, קונפיג, API מקומי, עלייה עם המחשב
 dart analyze
 
 # הרצה מקומית
@@ -147,6 +161,31 @@ dart run bin/chavruta_companion.dart --help
 הקונפיג והלוג יושבים ב-`%LOCALAPPDATA%\Chavruta`. אפשר להפנות אותם ל-
 `--data-dir` אחר, וכך גם להריץ שני מתאמים על מחשב אחד לבדיקה — הם ייקחו שני
 פורטים שונים ב-loopback וימצאו זה את זה ב-broadcast.
+
+### המשגר
+
+```powershell
+.\launcher\build.ps1              # ← dist\ChavrutaLauncher.exe (27KB)
+```
+
+דורש Visual Studio Build Tools עם עומס העבודה של C++ (הסקריפט מוצא את
+`vcvars64.bat` בעצמו). נבנה בלי ספריית CRT, ולכן אין לו שום תלות מלבד
+`kernel32`.
+
+למה הוא קיים ומה נוסה ונפסל לפניו — `editbin /subsystem:windows`,
+`FreeConsole`, והסתרה עצמית עם `ShowWindow` שאינה עובדת מול Windows
+Terminal — מתועד בראש [`launcher/chavruta_launcher.c`](launcher/chavruta_launcher.c)
+וב-[`companion/lib/console_window.dart`](companion/lib/console_window.dart).
+
+בדיקה שהמשגר עושה את שלו, כשנוגעים בו: להריץ אותו, ולדגום חלונות
+בזמן העלייה. הציפייה היא אפס דגימות עם חלון, ומתאם שעונה ב-loopback.
+
+```powershell
+Start-Process dist\ChavrutaLauncher.exe -ArgumentList '--quiet'
+Get-Process WindowsTerminal, OpenConsole -ErrorAction SilentlyContinue |
+  Where-Object MainWindowHandle -ne 0        # צריך להיות ריק
+Invoke-RestMethod http://127.0.0.1:45871/hello
+```
 
 ### התוסף
 
@@ -166,8 +205,22 @@ otzaria pack-plugin .\plugin --force -o .\dist\chavruta.otzplugin
 | `POST /publish` | דיווח על מקום הלימוד המקומי: `{bookId, index, ref}`. |
 | `POST /room` | כניסה לחברותא או יציאה ממנה: `{code}` (או `null`). |
 | `POST /name` | שינוי שם המכשיר: `{name}`. |
+| `GET /startup` | האם המתאם עולה עם המחשב: `{supported, enabled, command}`. |
+| `POST /startup` | הדלקה או כיבוי של העלייה: `{enabled}`. מחזיר את המצב **בפועל** אחרי השינוי. |
 
 השרת מאזין ב-`127.0.0.1` בלבד ואינו נגיש מהרשת.
+
+`/startup` כותב את מפתח ה-Run של המשתמש (`HKCU\...\CurrentVersion\Run`) —
+אותו ערך שהמתקין מנהל, ולכן שינוי בלשונית התוסף ושינוי בהתקנה אינם נלחמים
+זה בזה. הכתיבה נעשית ב-`reg.exe` ולא ב-FFI, כדי לא להוסיף תלות בשביל שדה
+בודד, והזיהוי הוא לפי קוד היציאה ולא לפי הפלט — כך אינו תלוי בשפת המערכת.
+`supported: false` = אין מה להציע (המתאם רץ מתוך `dart run`, או לא Windows),
+והתוסף מסתיר אז את המתג.
+
+**התוסף עצמו אינו נוגע ברישום ואינו מפעיל תוכניות** — ל-SDK של אוצריא אין
+API כזה, ובצדק. הוא רק שולח בקשה ב-loopback דרך `network.fetchStream`, מה
+שהרשאת `network.localhost` וה-`allowlist` שבמניפסט כבר מתירים; המתאם, שהוא
+תהליך Windows רגיל, עושה את העבודה.
 
 ## רישיון
 

@@ -34,6 +34,13 @@ jobs:
           Set-Location companion
           dart compile exe bin/chavruta_companion.dart -o ../dist/ChavrutaCompanion.exe
 
+      # המשגר הוא מה שנרשם לעלייה עם המחשב, כדי שלא ייווצר חלון קונסולה.
+      # -Required כדי ששבירה של launcher/chavruta_launcher.c תיפול כאן ולא
+      # תתגלה רק בשחרור.
+      - name: המשגר — קימפול
+        shell: pwsh
+        run: ./launcher/build.ps1 -Output dist -Required
+
       # אריזה בלי אוצריא: ולידציה קלה בלבד. הוולידציה המלאה (הרשאות מול
       # קריאות API, תאימות DESIGN_GUIDE) רצה בפיתוח מקומי דרך
       # `otzaria pack-plugin`, כי היא חיה בתוך אוצריא עצמה.
@@ -48,5 +55,6 @@ jobs:
           name: chavruta-dev-build
           path: |
             dist/ChavrutaCompanion.exe
+            dist/ChavrutaLauncher.exe
             dist/*.otzplugin
           if-no-files-found: error

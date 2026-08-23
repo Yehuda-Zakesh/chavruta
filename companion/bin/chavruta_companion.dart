@@ -110,8 +110,9 @@ _Args? _parseArgs(List<String> argv) {
 Future<void> main(List<String> argv) async {
   final args = _parseArgs(argv);
   if (args == null) return;
-  // מוסתר כברירת מחדל, לא רק עם --hidden: המתאם הוא תוכנית רקע, ומשתמש
-  // שמריץ את ה-exe בלחיצה כפולה לא צריך לראות חלון קונסולה בשביל זה.
+  // בהרצה הרגילה (דרך ChavrutaLauncher.exe) אין כאן חלון מלכתחילה, ולכן
+  // זו הרצה ישירה של ה-exe — לחיצה כפולה או קיצור דרך ישן — ואז מנסים
+  // להסתיר. ההסתרה אינה מובטחת; ראו את התיעוד ב-console_window.dart.
   // --console הוא היציאה המפורשת למי שרוצה לצפות בלוג בזמן פיתוח.
   if (!args.console) hideConsoleWindow();
 
