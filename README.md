@@ -163,7 +163,7 @@
 ```bash
 cd companion
 dart pub get
-dart test          # 102 בדיקות: פרוטוקול, hub, קונפיג, API מקומי, עלייה עם המחשב
+dart test          # 104 בדיקות: פרוטוקול, hub, קונפיג, API מקומי, עלייה עם המחשב
 dart analyze
 
 # הרצה מקומית

@@ -161,7 +161,9 @@ class StartupRegistration {
         supported: true,
         enabled: state.enabled,
         command: state.command,
-        reason: 'Windows לא קיבל את השינוי',
+        // סיבה מפורשת שהקריאה מצאה עדיפה על הכללית: היא אומרת *מה* קרה
+        // ולא רק שמשהו לא נתפס.
+        reason: state.reason ?? 'Windows לא קיבל את השינוי',
       );
     }
     return state;
@@ -184,12 +186,24 @@ class StartupRegistration {
     return null;
   }
 
-  /// האם שורת הפקודה הרשומה מפעילה משהו מתיקיית ההתקנה שלנו. גם המשגר
-  /// וגם המתאם יושבים באותה תיקייה, ולכן די בהשוואת התיקייה.
+  /// האם שורת הפקודה הרשומה מפעילה את ההתקנה הזאת.
+  ///
+  /// **הפלט של `reg.exe` מגיע בקידוד הקונסולה**, ותווים שאינם ASCII
+  /// חוזרים ממנו משובשים ובלתי ניתנים לשחזור: בחלונות בעברית הנתיב
+  /// `C:\Users\זאב לונטל\...` נקרא `C:\Users\†€ …ˆ\...`. לכן השוואת
+  /// הנתיב היא **ראיה חיובית בלבד** — כשהיא מתאימה זו בוודאות ההתקנה
+  /// שלנו, וכשלא, אי אפשר להסיק ממנה דבר.
+  ///
+  /// ההכרעה במקרה כזה נופלת על שם הקובץ, שהוא תמיד ASCII ולכן תמיד
+  /// קריא. כך "רשומה תוכנית אחרת" נאמר רק כשבאמת רשום משהו שאינו שלנו,
+  /// ולא על כל מי ששם המשתמש שלו אינו באנגלית — שהוא, בקהל של התוכנה
+  /// הזאת, רוב המשתמשים. המחיר: התקנה ישנה שלנו במיקום אחר אינה מזוהה
+  /// עוד ככזאת, וזה עדיף בהרבה על מתג שנופל אצל מי שהכול תקין אצלו.
   bool _pointsToThisInstall(String command) {
-    final dir = _dirName(_executable);
-    if (dir.isEmpty) return true;
-    return command.toLowerCase().contains(dir.toLowerCase());
+    final lower = command.toLowerCase();
+    if (lower.contains(_dirName(_executable).toLowerCase())) return true;
+    return lower.contains(companionExeName.toLowerCase()) ||
+        lower.contains(launcherExeName.toLowerCase());
   }
 
   /// `null` = אפשר לגעת ברישום. אחרת הסבר למה לא.
