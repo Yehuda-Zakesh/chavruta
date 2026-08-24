@@ -125,9 +125,10 @@ Filename: "{app}\{#PluginFile}"; Description: "התקנת תוסף החברות�
 #endif
 
 [UninstallRun]
+; מחיקת חוקי חומת האש אינה כאן אלא ב-[Code]: היא דורשת הרשאות מנהל גם
+; כשההתקנה עצמה לא הייתה מורמת, ולכן היא צריכה בקשת הרשאות משלה. ראו
+; RemoveFirewallRules.
 Filename: "{sys}\taskkill.exe"; Parameters: "/f /im {#MyAppExeName}"; Flags: runhidden; RunOnceId: "StopCompanion"
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Chavruta Companion (UDP-In)"""; Flags: runhidden; RunOnceId: "DelFwIn"; Check: IsAdminInstallMode
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Chavruta Companion (UDP-Out)"""; Flags: runhidden; RunOnceId: "DelFwOut"; Check: IsAdminInstallMode
 
 [UninstallDelete]
 ; הלוג נוצר בזמן ריצה ולכן אינו מנוהל על ידי המתקין. הקונפיג (קוד החברותא
@@ -152,22 +153,49 @@ Type: files; Name: "{localappdata}\Chavruta\companion.log"
 
   המחיקה שלפני ההוספה: netsh add מוסיף חוק נוסף בכל הרצה, ובלעדיה כל שדרוג
   היה מותיר עוד עותק ברשימת החוקים. }
+
+const
+  { מפתח המצב של המתקין. נשמר בו רק דבר אחד: האם *אנחנו* הוספנו חוקי חומת
+    אש, כדי שההסרה תדע אם יש מה למחוק — ולא תבקש הרשאות מנהל לשווא. }
+  StateKey = 'Software\Chavruta';
+  FirewallFlag = 'FirewallRules';
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  RunValue = 'ChavrutaCompanion';
+
+var
+  { עמוד המשימות מוצג מחדש בכל מעבר קדימה ואחורה באשף; הסנכרון עם הרישום
+    נעשה פעם אחת, אחרת הוא היה דורס בחירה ידנית של המשתמש. }
+  TasksSynced: Boolean;
+
 procedure ApplyFirewallRules;
 var
   Exe, Cmd: String;
   ResultCode: Integer;
 begin
   Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  { שתי המחיקות מחוברות ב-& כי כישלון שלהן צפוי (אין עדיין חוק), ושתי
+    ההוספות ב-&& כדי שקוד היציאה של cmd יהיה "שתיהן הצליחו" ולא רק
+    "האחרונה הצליחה". }
   Cmd :=
     '/c netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-In)" >nul 2>&1' +
     ' & netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-Out)" >nul 2>&1' +
     ' & netsh advfirewall firewall add rule name="Chavruta Companion (UDP-In)"' +
     ' dir=in action=allow protocol=UDP localport={#LanPort} program="' + Exe + '" profile=any' +
-    ' & netsh advfirewall firewall add rule name="Chavruta Companion (UDP-Out)"' +
+    ' && netsh advfirewall firewall add rule name="Chavruta Companion (UDP-Out)"' +
     ' dir=out action=allow protocol=UDP program="' + Exe + '" profile=any';
 
+  { ShellExec מצליחה כשהתהליך *הופעל*; ResultCode הוא מה שקרה בפועל.
+    בלי הבדיקה השנייה, netsh שנכשל (מדיניות קבוצתית, שירות חומת אש כבוי)
+    היה נספר כהצלחה, והמשתמש לא היה שומע על כך מילה. }
   if ShellExec('runas', ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    exit;
+  begin
+    if ResultCode = 0 then
+    begin
+      { סימון להסרה: רק מי שהוסיף חוקים צריך למחוק אותם. }
+      RegWriteStringValue(HKCU, StateKey, FirewallFlag, '1');
+      exit;
+    end;
+  end;
 
   { סירוב לבקשת ההרשאות, או netsh שנכשל. ההתקנה תקינה, אבל ייתכן שהסנכרון
     ייחסם — ועדיף שהמשתמש ידע את זה עכשיו ולא אחרי חצי שעה של המתנה. }
@@ -189,4 +217,76 @@ begin
     if IsAdmin or (not WizardSilent) then
       ApplyFirewallRules;
   end;
+end;
+
+{ סנכרון תיבת "עלייה עם המחשב" עם המצב האמיתי, בשדרוג בלבד.
+
+  המתג שבלשונית התוסף כותב את אותו ערך רישום בדיוק, ולכן משתמש שכיבה שם
+  את העלייה האוטומטית היה מקבל אותה בחזרה בשדרוג הבא — התיבה מסומנת
+  כברירת מחדל, והמתקין כותב את הערך שוב. בהתקנה ראשונה אין מה לסנכרן,
+  וברירת המחדל (מסומן, כמומלץ) נשארת. }
+procedure SyncStartupTask;
+var
+  List: String;
+begin
+  if TasksSynced then exit;
+  TasksSynced := True;
+  if not FileExists(ExpandConstant('{app}\{#MyAppExeName}')) then exit;
+
+  if RegValueExists(HKCU, RunKey, RunValue) then
+    List := 'startup'
+  else
+    List := '!startup';
+  { הרשימה כוללת גם את משימת חומת האש, ובכוונה: כך המצב שלה נשמר בלי
+    להישען על מה WizardSelectTasks עושה למשימות שאינן ברשימה. }
+  if WizardIsTaskSelected('firewall') then
+    List := List + ',firewall'
+  else
+    List := List + ',!firewall';
+  WizardSelectTasks(List);
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpSelectTasks then SyncStartupTask;
+end;
+
+{ מחיקת חוקי חומת האש בהסרה.
+
+  היא דורשת הרשאות מנהל גם כשההתקנה הייתה למשתמש הנוכחי בלבד — ולכן היא
+  כאן ולא ב-[UninstallRun], שם היא הייתה מוגבלת להסרה מורמת ומשאירה
+  לכל השאר חוקים תלויים באוויר לנצח. מבקשים הרשאות רק אם באמת הוספנו. }
+procedure RemoveFirewallRules;
+var
+  Cmd, Verb: String;
+  ResultCode: Integer;
+begin
+  if not RegValueExists(HKCU, StateKey, FirewallFlag) then exit;
+
+  Cmd :=
+    '/c netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-In)" >nul 2>&1' +
+    ' & netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-Out)" >nul 2>&1';
+
+  if IsAdmin then
+    Verb := 'open'
+  else
+  begin
+    { בהסרה שקטה אין למי להציג בקשת הרשאות, ובקשה פתאומית בלי הסבר נראית
+      מפחידה יותר מהחוק שהיא מוחקת. }
+    if UninstallSilent then exit;
+    if MsgBox(
+         'להסיר גם את חוק חומת האש שנוסף עבור החברותא?' + #13#10#13#10 +
+         'לשם כך יידרש אישור הרשאות מנהל.',
+         mbConfirmation, MB_YESNO) <> IDYES then exit;
+    Verb := 'runas';
+  end;
+
+  ShellExec(Verb, ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  RegDeleteValue(HKCU, StateKey, FirewallFlag);
+  RegDeleteKeyIfEmpty(HKCU, StateKey);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then RemoveFirewallRules;
 end;

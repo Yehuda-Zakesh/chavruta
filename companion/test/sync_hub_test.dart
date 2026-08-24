@@ -31,11 +31,19 @@ void main() {
   late FakeTransport transport;
   late SyncHub hub;
 
+  /// שעון הבדיקה: הזמן זז בהצהרה ולא בשינה, וכך פקיעת מחוברים נבדקת מיד.
+  late DateTime now;
+
   setUp(() async {
     temp = await TempConfig.create();
     config = temp.config(roomCode: 'חדר');
     transport = FakeTransport();
-    hub = SyncHub(config: config, transport: transport);
+    now = DateTime.now();
+    hub = SyncHub(
+      config: config,
+      transport: transport,
+      clock: () => now,
+    );
   });
 
   tearDown(() async {
@@ -290,17 +298,63 @@ void main() {
     expect(snapshot['peers'], isEmpty);
   });
 
+  group('היכרות מיידית', () {
+    test('מחובר חדש מקבל נוכחות מיד, בלי להמתין לפעימה', () async {
+      // בלי זה: הצד שהצטרף שני שומע אותנו מיד, אבל אנחנו נשמע ממנו רק
+      // בעוד presenceInterval — ועד אז המסך שלו אומר "ממתין לחברותא".
+      await transport.deliver(incoming(type: SyncMessageType.presence));
+
+      expect(
+        transport.sent.where((m) => m.type == SyncMessageType.presence),
+        hasLength(1),
+      );
+    });
+
+    test('מחובר מוכר אינו גורר נוכחות נוספת', () async {
+      await transport.deliver(incoming(type: SyncMessageType.presence));
+      transport.sent.clear();
+
+      // ההיכרות נסגרת אחרי סבב אחד; אחרת שני מתאמים היו עונים זה לזה
+      // בלי סוף.
+      await transport.deliver(
+        incoming(type: SyncMessageType.presence, sequence: 2),
+      );
+      expect(transport.sent, isEmpty);
+    });
+
+    test('הודעת פרידה אינה נחשבת מחובר חדש', () async {
+      await transport.deliver(
+        incoming(type: SyncMessageType.farewell, location: null),
+      );
+      expect(transport.sent, isEmpty);
+    });
+  });
+
   test('מחובר שנעלם נשמט מהרשימה אחרי peerTimeout', () async {
+    await transport.deliver(
+      incoming(type: SyncMessageType.presence, location: null),
+    );
+    expect(hub.snapshot()['peers'], hasLength(1));
+
+    now = now.add(peerTimeout + const Duration(seconds: 1));
+    expect(hub.snapshot()['peers'], isEmpty);
+  });
+
+  test('שעון מקדים אצל החברותא אינו משאיר אותה מחוברת', () async {
+    // חותמת הזמן שעל החוט מקדימה בארבע דקות — עוד בתוך freshnessWindow,
+    // ולכן ההודעה מתקבלת. כשהיא זו שנרשמה כ"נראה לאחרונה", המחובר נשאר
+    // ברשימה דקות ארוכות אחרי שהמחשב שלו כבר כבוי, והתוסף הציג "מסונכרן"
+    // בלי שיש עם מי.
     await transport.deliver(
       incoming(
         type: SyncMessageType.presence,
         location: null,
-        timestampMs:
-            DateTime.now().millisecondsSinceEpoch -
-            peerTimeout.inMilliseconds -
-            1000,
+        timestampMs: now.add(const Duration(minutes: 4)).millisecondsSinceEpoch,
       ),
     );
+    expect(hub.snapshot()['peers'], hasLength(1));
+
+    now = now.add(peerTimeout + const Duration(seconds: 1));
     expect(hub.snapshot()['peers'], isEmpty);
   });
 }

@@ -12,12 +12,29 @@ import 'sync_hub.dart';
 /// מרווח בטחון גדול ובכל זאת חוסכות תחקור בלופ.
 const Duration longPollTimeout = Duration(seconds: 25);
 
+/// כותרות שדפדפן מוסיף בעצמו ואינו מאפשר לקוד JavaScript לגעת בהן.
+///
+/// נוכחות של אחת מהן פירושה שהבקשה יצאה מדף אינטרנט — ולא מהתוסף, שפונה
+/// דרך לקוח ה-HTTP של Dart ואינו שולח אף אחת מהן. ראו [_looksLikeBrowser].
+const List<String> browserOnlyHeaders = [
+  'origin',
+  'referer',
+  'sec-fetch-site',
+  'sec-fetch-mode',
+];
+
 /// שרת ה-HTTP שהתוסף מדבר איתו, על loopback בלבד.
 ///
-/// **גבול האבטחה כאן הוא ההאזנה ל-127.0.0.1** — השרת אינו נגיש מהרשת.
-/// אין כאן כותרות CORS בכוונה: התוסף פונה דרך `network.fetch` שרץ בצד
-/// Flutter ואינו כפוף ל-CORS, ולכן דפי אינטרנט בדפדפן לא יכולים לדבר
-/// עם השרת הזה.
+/// **ההאזנה ל-127.0.0.1 מונעת גישה מהרשת, אך לא מדף אינטרנט שהמשתמש
+/// פתח בדפדפן.** דף כזה אינו יכול *לקרוא* את התשובה (אין כאן כותרות
+/// CORS, בכוונה), אבל בקשת POST פשוטה — בלי כותרות מיוחדות — יוצאת
+/// אליו בלי preflight, והפעולה מתבצעת: יציאה מהחברותא, שינוי שם, הדלקת
+/// עלייה עם המחשב. טווח הפורטים קטן וקל לסריקה, ולכן זה אינו תיאורטי.
+///
+/// לכן כל בקשה שנושאת סימן של דפדפן נדחית ב-403 (ראו
+/// [browserOnlyHeaders]). הדחייה היא על כל הנתיבים, כולל `/hello`, כדי
+/// שגם סריקת פורטים מדף לא תקבל תשובה. בדיקה ידנית ב-curl או
+/// ב-`Invoke-RestMethod` אינה שולחת את הכותרות האלה וממשיכה לעבוד.
 class LocalApi {
   LocalApi({
     required this.hub,
@@ -67,6 +84,17 @@ class LocalApi {
 
   Future<void> _handle(HttpRequest request) async {
     try {
+      if (_looksLikeBrowser(request)) {
+        onLog?.call(
+          'נדחתה פנייה מדפדפן אל ${request.uri.path} '
+          '(origin: ${request.headers.value('origin') ?? '—'})',
+        );
+        await _respondJson(request, {
+          'error': 'browser requests are not accepted',
+        }, status: HttpStatus.forbidden);
+        return;
+      }
+
       final path = request.uri.path;
       switch ('${request.method} $path') {
         case 'GET /hello':
@@ -104,6 +132,14 @@ class LocalApi {
       }
     }
   }
+
+  /// האם הבקשה הגיעה מדף אינטרנט. ראו את התיעוד בראש [LocalApi].
+  ///
+  /// הכותרות האלה הן "forbidden header names" בתקן: דפדפן קובע אותן
+  /// בעצמו, וקוד בדף אינו יכול להוסיף, לשנות או להסיר אותן. לכן זה
+  /// סינון שאי אפשר לעקוף מתוך דף.
+  static bool _looksLikeBrowser(HttpRequest request) =>
+      browserOnlyHeaders.any((name) => request.headers.value(name) != null);
 
   /// המתנה ארוכה לעדכון. חוזרת מיד אם יש עדכון חדש מ-[since], ואחרת
   /// ממתינה עד שמשהו קורה או עד שיפוג הזמן.
@@ -145,9 +181,20 @@ class LocalApi {
     await _respondJson(request, {'broadcast': broadcast, ...hub.snapshot()});
   }
 
+  /// כניסה לחברותא או יציאה ממנה.
+  ///
+  /// היציאה חייבת להיות **מפורשת** — `{"code": null}` — ולא נגזרת מגוף
+  /// חסר או שבור. אחרת בקשה שנקטעה באמצע, או גוף שאינו UTF-8 תקין,
+  /// היו מוציאים את המשתמש מהחברותא בלי שביקש ובלי שידע.
   Future<void> _handleRoom(HttpRequest request) async {
     final body = await _readJsonBody(request);
-    final code = body is Map ? body['code'] : null;
+    if (body is! Map || !body.containsKey('code')) {
+      await _respondJson(request, {
+        'error': 'code is required (null to leave the chavruta)',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
+    final code = body['code'];
     if (code != null && code is! String) {
       await _respondJson(request, {
         'error': 'code must be a string or null',
@@ -191,8 +238,18 @@ class LocalApi {
     await _respondJson(request, state.toJson());
   }
 
+  /// קורא גוף JSON. `null` = אין גוף, או שאינו קריא — ואז כל נתיב
+  /// מחזיר 400 משלו.
+  ///
+  /// גם פענוח ה-UTF-8 עטוף: `utf8.decoder` זורק על בייטים שאינם UTF-8
+  /// תקין, וזה היה מגיע כ-500 ("שגיאת שרת") על בקשה פגומה של הלקוח.
   Future<Object?> _readJsonBody(HttpRequest request) async {
-    final text = await utf8.decoder.bind(request).join();
+    final String text;
+    try {
+      text = await utf8.decoder.bind(request).join();
+    } catch (_) {
+      return null;
+    }
     if (text.trim().isEmpty) return null;
     try {
       return jsonDecode(text);

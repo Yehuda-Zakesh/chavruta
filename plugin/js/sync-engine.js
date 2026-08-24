@@ -27,6 +27,19 @@ const SyncEngine = (function () {
   let status = { connected: false, error: null, state: null };
   let onStatusChange = function () {};
 
+  /**
+   * מזהה הלולאה הפעילה. `stop()` ואחריו `start()` משאירים את הלולאה
+   * הישנה תלויה בתוך `await` ארוך, והיא הייתה מתעוררת לתוך `running`
+   * שכבר חזר להיות אמת — שתי לולאות שמנווטות פעמיים על כל עדכון.
+   */
+  let loopToken = 0;
+
+  /** האם הבקשה האחרונה למתאם הצליחה. מעבר משקר לאמת = מתאם שקם. */
+  let connected = false;
+
+  /** הספר האחרון שדווח כחסר, כדי לא להציף את המשתמש באותה הודעה. */
+  let missingBook = null;
+
   function sleep(ms) {
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
@@ -65,6 +78,22 @@ const SyncEngine = (function () {
     }
   }
 
+  /**
+   * הודעה למשתמש דרך אוצריא.
+   *
+   * המנוע רץ בדרך כלל במופע הרקע, שאין לו מסך משלו — ולכן הודעה שנכתבת
+   * ל-`status` בלבד אינה מגיעה לאיש. `ui.showError` היא הדרך היחידה
+   * לומר משהו מהרקע, והיא נתמכת שם במפורש.
+   */
+  function notifyUser(message) {
+    try {
+      const call = Otzaria.call('ui.showError', { message: message });
+      if (call && typeof call.catch === 'function') call.catch(function () {});
+    } catch (e) {
+      // ההודעה היא שירות למשתמש, לא חלק מהסנכרון.
+    }
+  }
+
   async function publish(location) {
     if (!location) return;
     const key = keyOf(location);
@@ -76,6 +105,24 @@ const SyncEngine = (function () {
       // המתאם אינו זמין כרגע. אין טעם לתור המתנה: המקום הנוכחי יידווח
       // שוב בשינוי הבא, וגם `/events` תגלה שהמתאם חזר.
       setStatus({ connected: false, error: e.message, state: null });
+    }
+  }
+
+  /**
+   * מדווח את המקום הנוכחי מחדש, גם אם הוא כבר דווח.
+   *
+   * נדרש בכל פעם שהמתאם עולה: מתאם שהופעל מחדש (שדרוג, הפעלה מחדש של
+   * המחשב) מתחיל בלי מיקום מקומי כלל, ובלי הדיווח הזה הוא היה נשאר כך
+   * עד שהמשתמש יעבור דף — כלומר "המקום שלי" ריק, והחברותא אינה יודעת
+   * איפה אנחנו.
+   */
+  async function republishCurrent() {
+    lastSentKey = null;
+    try {
+      const here = await currentLocation();
+      if (here) await publish(here);
+    } catch (e) {
+      // אין ספר פתוח, או שאוצריא לא ענתה. השינוי הבא ידווח ממילא.
     }
   }
 
@@ -99,36 +146,59 @@ const SyncEngine = (function () {
       return;
     }
 
-    // הניווט הזה יוליד אירוע שינוי מקום שיחזור אלינו מיד. מסמנים אותו
-    // כ"נשלח" כדי שלא נשדר לחברותא את מה שהיא עצמה ביקשה.
-    lastSentKey = keyOf(location);
-
+    // ההד שיחזור מהניווט הזה **כן** מדווח למתאם, ובכוונה: המתאם מזהה
+    // אותו בעצמו (חלון ההד שב-`markHandedToPlugin`) ואינו משדר אותו
+    // בחזרה לחברותא, אבל כן לומד מתוכו איפה אנחנו נמצאים עכשיו. חסימה
+    // כאן הייתה משאירה את "המקום שלי" תקוע על המקום הקודם, ואת הנוכחות
+    // משדרת מיקום ישן.
     const res = await Otzaria.call('reader.openBook', {
       bookId: location.bookId,
       index: location.index,
       navigateToPositionIfReused: true,
     });
-    if (!res || !res.success || res.data === false) {
-      // הספר אינו קיים בספרייה של המחשב הזה — מצב רגיל בין ספריות שונות.
-      lastSentKey = null;
-      setStatus({
-        connected: true,
-        error: 'הספר "' + location.bookId + '" אינו נמצא בספרייה שלך',
-        state: status.state,
-      });
+    if (res && res.success && res.data !== false) {
+      missingBook = null;
+      return;
     }
+
+    // הספר אינו קיים בספרייה של המחשב הזה — מצב רגיל בין ספריות שונות,
+    // אבל מבחוץ הוא נראה בדיוק כמו סנכרון שהפסיק לעבוד. לכן אומרים.
+    const message = 'החברותא נמצאת בספר "' + location.bookId +
+      '", והוא אינו בספרייה שלך — הסנכרון ימשיך בספר הבא.';
+    if (location.bookId !== missingBook) {
+      missingBook = location.bookId;
+      notifyUser(message);
+    }
+    setStatus({ connected: true, error: message, state: status.state });
   }
 
-  async function loop() {
-    while (running) {
+  /** האם הלולאה הזאת עדיין הפעילה. ראו [loopToken]. */
+  function current(token) {
+    return running && token === loopToken;
+  }
+
+  async function loop(token) {
+    while (current(token)) {
       try {
         const state = await Companion.events(since);
+        if (!current(token)) return;
         retryDelay = RETRY_MIN_MS;
         if (typeof state.remoteSequence === 'number') since = state.remoteSequence;
         setStatus({ connected: true, error: null, state: state });
+
+        // מתאם שרק עכשיו נמצא — בעלייה, או אחרי שקם מחדש — אינו יודע
+        // איפה אנחנו. מדווחים לפני הטיפול בעדכון, כדי שהמצב שלו יהיה
+        // שלם גם אם הניווט שאחריו ייכשל.
+        if (!connected) {
+          connected = true;
+          await republishCurrent();
+          if (!current(token)) return;
+        }
+
         if (state.hasUpdate && state.remote) await applyRemote(state.remote);
       } catch (e) {
-        if (!running) return;
+        connected = false;
+        if (!current(token)) return;
         setStatus({ connected: false, error: e.message, state: null });
         await sleep(retryDelay);
         retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
@@ -150,29 +220,30 @@ const SyncEngine = (function () {
       onStatusChange = callback || function () {};
     },
 
-    async start() {
+    start: function () {
       if (running) return;
       running = true;
       since = -1;
+      // המצב מאופס גם אם המנוע כבר רץ פעם: מתאם אחר, או אותו מתאם
+      // אחרי הפעלה מחדש, אינו יודע דבר על מה שדיווחנו בעבר.
+      connected = false;
+      lastSentKey = null;
+      missingBook = null;
 
       listener = function (payload) {
         queuePublish(payload);
       };
       Otzaria.on('reader.current_ref_changed', listener);
 
-      // דיווח ראשוני: החברותא צריכה לדעת איפה אנחנו גם בלי שנזוז.
-      try {
-        const here = await currentLocation();
-        if (here) await publish(here);
-      } catch (e) {
-        // אין ספר פתוח, או שהמתאם עוד לא עלה. הלופ יטפל בזה.
-      }
-
-      loop();
+      // הדיווח הראשוני אינו כאן אלא בלולאה, ברגע שהמתאם עונה: בעלייה
+      // הוא לא תמיד כבר רץ, ודיווח שנכשל כאן לא היה חוזר לעולם.
+      loopToken++;
+      loop(loopToken);
     },
 
     stop: function () {
       running = false;
+      connected = false;
       if (listener) {
         Otzaria.off('reader.current_ref_changed', listener);
         listener = null;

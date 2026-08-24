@@ -23,12 +23,19 @@ class _Client {
     String method,
     String path, {
     Object? body,
+    List<int>? rawBody,
+    Map<String, String>? headers,
   }) async {
     final request = await _http.openUrl(
       method,
       Uri.parse('http://127.0.0.1:$port$path'),
     );
-    if (body != null) {
+    headers?.forEach(request.headers.set);
+    if (rawBody != null) {
+      request.headers.contentType = ContentType.json;
+      request.contentLength = rawBody.length;
+      request.add(rawBody);
+    } else if (body != null) {
       final bytes = utf8.encode(jsonEncode(body));
       request.headers.contentType = ContentType.json;
       request.contentLength = bytes.length;
@@ -160,6 +167,63 @@ void main() {
       expect(response.status, HttpStatus.badRequest);
       expect(config.roomCode, 'חדר');
     });
+
+    test('גוף חסר אינו מוציא מהחברותא', () async {
+      // בקשה שנקטעה, או לקוח שגוי, אינם "יציאה מהחברותא". רק `code: null`
+      // מפורש מוציא — אחרת המשתמש היה מנותק בלי שביקש ובלי שידע.
+      final response = await client.request('POST', '/room');
+      expect(response.status, HttpStatus.badRequest);
+      expect(config.roomCode, 'חדר');
+    });
+
+    test('גוף ריק מ-code אינו מוציא מהחברותא', () async {
+      final response = await client.request('POST', '/room', body: {});
+      expect(response.status, HttpStatus.badRequest);
+      expect(config.roomCode, 'חדר');
+    });
+
+    test('גוף שאינו UTF-8 תקין מוחזר כשגיאת קלט ולא כשגיאת שרת', () async {
+      // 0xC3 פותח רצף דו-בייטי שאין לו המשך; utf8.decoder זורק עליו.
+      final response = await client.request(
+        'POST',
+        '/room',
+        rawBody: [0x7b, 0x22, 0xc3],
+      );
+      expect(response.status, HttpStatus.badRequest);
+      expect(config.roomCode, 'חדר');
+    });
+  });
+
+  group('דחיית פניות מדפדפן', () {
+    // דף אינטרנט אינו יכול לקרוא את התשובה, אבל בקשת POST פשוטה יוצאת
+    // ממנו בלי preflight — והפעולה הייתה מתבצעת. הכותרות האלה נקבעות
+    // בידי הדפדפן וקוד בדף אינו יכול להסיר אותן.
+    for (final header in browserOnlyHeaders) {
+      test('$header חוסמת גם את /hello', () async {
+        final response = await client.request(
+          'GET',
+          '/hello',
+          headers: {header: 'https://example.com'},
+        );
+        expect(response.status, HttpStatus.forbidden);
+      });
+    }
+
+    test('POST מדף אינטרנט אינו מוציא מהחברותא', () async {
+      final response = await client.request(
+        'POST',
+        '/room',
+        body: {'code': null},
+        headers: {'origin': 'https://example.com'},
+      );
+      expect(response.status, HttpStatus.forbidden);
+      expect(config.roomCode, 'חדר');
+    });
+
+    test('בקשה רגילה, בלי הכותרות האלה, ממשיכה לעבוד', () async {
+      final response = await client.request('GET', '/hello');
+      expect(response.status, HttpStatus.ok);
+    });
   });
 
   group('POST /name', () {
@@ -231,7 +295,12 @@ void main() {
         body: {'bookId': 'ברכות', 'index': 12},
       );
       expect(published.json['broadcast'], isFalse);
-      expect(transport.sent, isEmpty);
+      // הודעת הנוכחות שנשלחת בתגובה למחובר חדש היא בסדר; מה שאסור לצאת
+      // הוא עדכון מיקום, שהיה מחזיר לחברותא את מה שהיא עצמה ביקשה.
+      expect(
+        transport.sent.where((m) => m.type == SyncMessageType.location),
+        isEmpty,
+      );
     });
 
     test('בקשה שממתינה משתחררת ברגע שמגיע עדכון', () async {

@@ -73,7 +73,13 @@ const Companion = (function () {
       for await (const chunk of chunks) {
         if (chunk.type === 'response') {
           // יציאה מהלופ מבטלת את הבקשה בצד אוצריא, ולכן אין כאן דליפה.
-          if (!chunk.ok) throw new Error('המתאם החזיר שגיאה ' + chunk.status);
+          //
+          // `http` ולא `network`: תשובת שגיאה היא **מישהו שענה**, ולכן
+          // אסור לתרגם אותה ל"אין מתאם כאן" — הודעה ששולחת את המשתמש
+          // להתקין תוכנה שכבר רצה ועונה.
+          if (!chunk.ok) {
+            throw failure('http', 'המתאם החזיר שגיאה ' + chunk.status);
+          }
           continue;
         }
         if (typeof chunk.body === 'string') body += chunk.body;
@@ -135,7 +141,11 @@ const Companion = (function () {
       } catch (e) {
         // חסימה בצד אוצריא (הרשאה, allowlist, גרסה) תחזור זהה בכל פורט,
         // ולכן עוצרים את הסריקה ומדווחים עליה כמו שהיא.
-        if (e && e.kind && e.kind !== 'network') {
+        //
+        // `http` נחשב כאן ככשל של הפורט ולא של המערכת: מי שעונה בשגיאה
+        // על `/hello` אינו המתאם שלנו, וייתכן שהוא ממשיך לשבת על הפורט
+        // בזמן שהמתאם האמיתי עלה על הבא בטווח.
+        if (e && e.kind && e.kind !== 'network' && e.kind !== 'http') {
           port = null;
           throw e;
         }

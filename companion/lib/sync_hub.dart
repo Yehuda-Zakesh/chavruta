@@ -20,6 +20,12 @@ class PeerInfo {
 
   final String id;
   String name;
+
+  /// מתי נשמעה ממנו הודעה לאחרונה, **לפי השעון של המחשב הזה**. השעון של
+  /// החברותא יכול לסטות עד [freshnessWindow] בלי שההודעות יידחו, ולכן
+  /// חותמת הזמן שעל החוט אינה שמישה כאן: מי שהשעון שלו מקדים היה נראה
+  /// מחובר עוד דקות ארוכות אחרי שכיבה, וגם התוסף מציג "נראה לפני..." לפי
+  /// השעון המקומי.
   int lastSeenMs;
 
   Map<String, Object?> toJson() => {
@@ -50,10 +56,17 @@ class RemoteUpdate {
   };
 }
 
+DateTime _systemClock() => DateTime.now();
+
 /// הליבה: מחברת בין התוסף (דרך ה-API המקומי) לבין הרשת המקומית,
 /// ומחזיקה את כל ההחלטות — מי חבר, מה המיקום המרוחק, ומה הד.
 class SyncHub {
-  SyncHub({required this.config, required this.transport, this.onLog}) {
+  SyncHub({
+    required this.config,
+    required this.transport,
+    this.onLog,
+    DateTime Function()? clock,
+  }) : _now = clock ?? _systemClock {
     transport.inbound.listen(_handleInbound);
     // הסוקט קם מחדש אחרי נפילה ברשת. בזמן הנפילה החברותא הפסיקה לשמוע
     // אותנו, ולכן מכריזים נוכחות מיד — במקום להמתין עד לפעימה הבאה.
@@ -65,6 +78,12 @@ class SyncHub {
   final CompanionConfig config;
   final LanTransport transport;
   final void Function(String message)? onLog;
+
+  /// השעון שלפיו נמדד הזמן כאן. פרמטר ולא `DateTime.now` ישיר, כדי
+  /// שבדיקות יוכלו להזיז את הזמן במקום לישון.
+  final DateTime Function() _now;
+
+  int get _nowMs => _now().millisecondsSinceEpoch;
 
   int _outgoingSequence = 0;
 
@@ -83,7 +102,12 @@ class SyncHub {
   int _lastHandedToPluginAtMs = 0;
 
   /// המצב האחרון שנקלט מכל שולח, לזיהוי הודעות כפולות או מאוחרות.
-  final Map<String, ({int sequence, int timestampMs})> _lastFromSender = {};
+  ///
+  /// [receivedAtMs] הוא לפי השעון המקומי, ומשמש לניקוי בלבד: רשומה
+  /// ישנה מ-[freshnessWindow] כבר אינה מונעת כלום, כי הודעה בגיל כזה
+  /// נדחית ממילא ב-`SyncMessage.decode`.
+  final Map<String, ({int sequence, int timestampMs, int receivedAtMs})>
+  _lastFromSender = {};
 
   final List<Completer<void>> _waiters = [];
   Timer? _presenceTimer;
@@ -147,8 +171,7 @@ class SyncHub {
     if (!config.isPaired) return false;
 
     final handed = _lastHandedToPlugin;
-    final sinceHanded =
-        DateTime.now().millisecondsSinceEpoch - _lastHandedToPluginAtMs;
+    final sinceHanded = _nowMs - _lastHandedToPluginAtMs;
     if (handed != null &&
         location.sameSpotAs(handed) &&
         sinceHanded < echoWindow.inMilliseconds) {
@@ -165,7 +188,7 @@ class SyncHub {
   /// מסמן שהעדכון המרוחק נמסר לתוסף, כדי שההד שיחזור ממנו יזוהה.
   void markHandedToPlugin(SyncLocation location) {
     _lastHandedToPlugin = location;
-    _lastHandedToPluginAtMs = DateTime.now().millisecondsSinceEpoch;
+    _lastHandedToPluginAtMs = _nowMs;
   }
 
   Future<void> _announcePresence() => transport.send(
@@ -178,7 +201,7 @@ class SyncHub {
         roomHash: SyncMessage.hashRoomCode(config.roomCode ?? ''),
         senderId: config.deviceId,
         senderName: config.deviceName,
-        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        timestampMs: _nowMs,
         sequence: ++_outgoingSequence,
         location: location,
       );
@@ -203,6 +226,7 @@ class SyncHub {
     _lastFromSender[message.senderId] = (
       sequence: message.sequence,
       timestampMs: message.timestampMs,
+      receivedAtMs: _nowMs,
     );
 
     final peer = _peers[message.senderId];
@@ -210,12 +234,18 @@ class SyncHub {
       _peers[message.senderId] = PeerInfo(
         id: message.senderId,
         name: message.senderName,
-        lastSeenMs: message.timestampMs,
+        lastSeenMs: _nowMs,
       );
       onLog?.call('peer joined: ${message.senderName}');
+      // מכריזים נוכחות מיד, ולא ממתינים לפעימה הבאה: הצד שהצטרף שני
+      // שמע אותנו, אבל אנחנו נשמע ממנו רק בעוד [presenceInterval] —
+      // ועד אז המסך שלו אומר "ממתין לחברותא" בזמן שהיא כאן. התשובה
+      // הזאת אינה מתגלגלת בלי סוף: מי שכבר ברשימה אינו "חדש", ולכן
+      // ההיכרות נסגרת אחרי סבב אחד.
+      unawaited(_announcePresence());
     } else {
       peer.name = message.senderName;
-      peer.lastSeenMs = message.timestampMs;
+      peer.lastSeenMs = _nowMs;
     }
 
     final location = message.location;
@@ -236,9 +266,16 @@ class SyncHub {
   }
 
   void _prunePeers() {
-    final cutoff =
-        DateTime.now().millisecondsSinceEpoch - peerTimeout.inMilliseconds;
-    _peers.removeWhere((_, peer) => peer.lastSeenMs < cutoff);
+    final now = _nowMs;
+    _peers.removeWhere(
+      (_, peer) => peer.lastSeenMs < now - peerTimeout.inMilliseconds,
+    );
+    // רשומות הכפילות נמחקות מאוחר יותר מהמחוברים עצמם, ובכוונה: כל עוד
+    // הודעה בגיל הזה עדיין יכולה להתקבל, הרשומה היא מה שמונע קליטה
+    // חוזרת שלה. מעבר ל-freshnessWindow אין מה לשמור.
+    _lastFromSender.removeWhere(
+      (_, last) => last.receivedAtMs < now - freshnessWindow.inMilliseconds,
+    );
   }
 
   /// ממתין לשינוי במצב (עדכון מרוחק או שינוי ברשימת המחוברים), או עד
@@ -246,12 +283,14 @@ class SyncHub {
   Future<void> waitForChange(Duration timeout) {
     final completer = Completer<void>();
     _waiters.add(completer);
-    Timer(timeout, () {
+    final timer = Timer(timeout, () {
       if (_waiters.remove(completer) && !completer.isCompleted) {
         completer.complete();
       }
     });
-    return completer.future;
+    // הטיימר מבוטל גם כשההמתנה נגמרה מוקדם. בלי זה כל בקשת `/events`
+    // שנענתה מיד הייתה משאירה טיימר חי עד תום 25 השניות שלו.
+    return completer.future.whenComplete(timer.cancel);
   }
 
   void _wakeWaiters() {

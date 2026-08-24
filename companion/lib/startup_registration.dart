@@ -87,10 +87,30 @@ class StartupRegistration {
       ]);
       // קוד יציאה 1 = הערך אינו קיים, כלומר אינו עולה עם המחשב. זו אינה
       // שגיאה, ולכן אין כאן הבדל בין 1 לכל קוד אחר שאינו 0.
+      if (result.exitCode != 0) {
+        return StartupState(
+          supported: true,
+          enabled: false,
+          command: await _startupCommand(),
+        );
+      }
+
+      // קיום הערך אינו מספיק: השאלה היא אם **המתאם הזה** עולה עם המחשב.
+      // התקנה קודמת במיקום אחר משאירה ערך באותו שם שמצביע לקובץ שכבר
+      // אינו קיים, ואז המתג היה מראה "דלוק" בזמן ששום דבר אינו עולה.
+      final registered = _registeredCommand('${result.stdout}');
+      if (registered != null && !_pointsToThisInstall(registered)) {
+        return StartupState(
+          supported: true,
+          enabled: false,
+          command: registered,
+          reason: 'רשומה לעלייה תוכנית אחרת בשם הזה',
+        );
+      }
       return StartupState(
         supported: true,
-        enabled: result.exitCode == 0,
-        command: await _startupCommand(),
+        enabled: true,
+        command: registered ?? await _startupCommand(),
       );
     } catch (e) {
       return StartupState(
@@ -145,6 +165,31 @@ class StartupRegistration {
       );
     }
     return state;
+  }
+
+  /// שולף את נתוני הערך מפלט `reg query`, או `null` אם לא נמצא.
+  ///
+  /// הפלט של `reg.exe` הוא `<שם>    <טיפוס>    <נתונים>` בשורה אחת.
+  /// שם הטיפוס (`REG_SZ`) אינו מתורגם בשום שפת מערכת, ולכן הוא העוגן —
+  /// וכך הפענוח נשאר נכון גם בחלונות בעברית.
+  static String? _registeredCommand(String output) {
+    for (final line in output.split('\n')) {
+      const type = 'REG_SZ';
+      final index = line.indexOf(type);
+      if (index < 0) continue;
+      if (!line.substring(0, index).contains(startupValueName)) continue;
+      final data = line.substring(index + type.length).trim();
+      return data.isEmpty ? null : data;
+    }
+    return null;
+  }
+
+  /// האם שורת הפקודה הרשומה מפעילה משהו מתיקיית ההתקנה שלנו. גם המשגר
+  /// וגם המתאם יושבים באותה תיקייה, ולכן די בהשוואת התיקייה.
+  bool _pointsToThisInstall(String command) {
+    final dir = _dirName(_executable);
+    if (dir.isEmpty) return true;
+    return command.toLowerCase().contains(dir.toLowerCase());
   }
 
   /// `null` = אפשר לגעת ברישום. אחרת הסבר למה לא.

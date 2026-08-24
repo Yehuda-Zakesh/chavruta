@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:chavruta_companion/startup_registration.dart';
+
 /// `reg.exe` מדומה, עם הסמנטיקה שהקוד באמת נשען עליה: קוד יציאה 0 כשהערך
 /// קיים או נכתב, ו-1 כשאין ערך למצוא או למחוק.
 ///
@@ -20,7 +22,14 @@ class FakeReg {
 
     switch (command) {
       case 'query':
-        return _result(value == null ? 1 : 0);
+        if (value == null) return _result(1);
+        // הפלט האמיתי של reg.exe, כי הקוד קורא ממנו את הנתונים כדי לדעת
+        // אם הרישום מצביע להתקנה הזאת או לאחרת.
+        return _result(
+          0,
+          '\r\n$startupRunKey\r\n'
+          '    $startupValueName    REG_SZ    $value\r\n\r\n',
+        );
       case 'add':
         final index = arguments.indexOf('/d');
         if (!frozen && index >= 0 && index + 1 < arguments.length) {
@@ -36,5 +45,6 @@ class FakeReg {
     }
   }
 
-  ProcessResult _result(int exitCode) => ProcessResult(0, exitCode, '', '');
+  ProcessResult _result(int exitCode, [String stdout = '']) =>
+      ProcessResult(0, exitCode, stdout, '');
 }

@@ -44,6 +44,19 @@ void main() {
       expect(state.enabled, isTrue);
     });
 
+    test('ערך שמצביע להתקנה אחרת אינו נחשב "עולה עם המחשב"', () async {
+      // התקנה קודמת במיקום אחר משאירה ערך באותו שם. הוא קיים, אבל הוא
+      // מפעיל קובץ אחר (שלרוב כבר אינו קיים), ולכן המתג היה מראה "דלוק"
+      // בזמן ששום דבר אינו עולה. הדלקה מכאן פשוט תדרוס אותו בשלנו.
+      final reg = FakeReg(value: r'"C:\Program Files\Old\ChavrutaCompanion.exe" --hidden');
+      final state = await subject(reg).read();
+
+      expect(state.supported, isTrue);
+      expect(state.enabled, isFalse);
+      expect(state.reason, isNotNull);
+      expect(state.command, contains('Old'));
+    });
+
     test('הפעלה רושמת את המשגר כשהוא לצד ה-exe', () async {
       final launcher = '${dir.path}${Platform.pathSeparator}$launcherExeName';
       await File(launcher).writeAsString('exe');

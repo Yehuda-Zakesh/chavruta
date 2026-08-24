@@ -12,6 +12,13 @@ const String linkLocalBroadcast = '169.254.255.255';
 /// מת מעצמו, ולמה בלי הבדיקה הזאת הסנכרון פשוט מפסיק לעבוד בלי סימן.
 const Duration socketWatchdogInterval = Duration(seconds: 5);
 
+/// כמה זמן רשימת יעדי השידור נשמרת בלי למנות מחדש את כרטיסי הרשת.
+///
+/// מניית הכרטיסים היא קריאת מערכת, והיא הייתה רצה בכל שידור — כלומר גם
+/// בכל מעבר דף. חלון קצר כזה חוסך את רובן ועדיין מגלה שינוי רשת מהר;
+/// וממילא נפילת סוקט מאפסת את המטמון מיד.
+const Duration targetsCacheTtl = Duration(seconds: 3);
+
 /// כמה שידורים רצופים שבהם *אף* בייט לא יצא נחשבים לסוקט מת.
 ///
 /// שידור שחוזר 0 הוא בדרך כלל חוצץ מלא לרגע, ולכן לא מגיבים לאחד בודד;
@@ -56,6 +63,10 @@ class LanTransport {
 
   int _deadSends = 0;
   List<String> _lastTargets = const [];
+
+  /// יעדי השידור שנמנו לאחרונה, ובן כמה הם. ראו [targetsCacheTtl].
+  List<String>? _cachedTargets;
+  final Stopwatch _targetsAge = Stopwatch();
 
   final _inbound = StreamController<SyncMessage>.broadcast();
 
@@ -149,6 +160,8 @@ class LanTransport {
     _socket?.close();
     _socket = null;
     _deadSends = 0;
+    // הרשת השתנתה תחתינו; היעדים שנמנו לפני כן אינם רלוונטיים.
+    _cachedTargets = null;
     _lastError = error is SocketException ? error.message : '$error';
     if (wasBound) {
       _recovering = true;
@@ -296,6 +309,9 @@ class LanTransport {
   }
 
   Future<List<String>> _targets() async {
+    final cached = _cachedTargets;
+    if (cached != null && _targetsAge.elapsed < targetsCacheTtl) return cached;
+
     final addresses = <String>[];
     try {
       final interfaces = await NetworkInterface.list(
@@ -311,7 +327,12 @@ class LanTransport {
     } catch (e) {
       onLog?.call('לא ניתן לרשום כרטיסי רשת: $e');
     }
-    return broadcastTargetsFor(addresses);
+    final targets = broadcastTargetsFor(addresses);
+    _cachedTargets = targets;
+    _targetsAge
+      ..reset()
+      ..start();
+    return targets;
   }
 
   Future<void> dispose() async {

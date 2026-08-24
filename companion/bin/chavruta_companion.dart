@@ -179,8 +179,13 @@ Future<void> main(List<String> argv) async {
   );
 
   final done = Completer<void>();
+  // דגל ולא `done.isCompleted`: הסגירה היא אסינכרונית, ו-`done` מסומן רק
+  // בסופה. שני Ctrl+C צמודים היו שניהם עוברים את הבדיקה, סוגרים פעמיים
+  // ומשדרים שתי הודעות פרידה.
+  var closing = false;
   Future<void> shutdown(String reason) async {
-    if (done.isCompleted) return;
+    if (closing) return;
+    closing = true;
     log('נסגר ($reason)');
     await api.dispose();
     await hub.dispose();

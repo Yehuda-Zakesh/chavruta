@@ -52,6 +52,9 @@
    *  אם יש זיווג, אך לא את הקוד עצמו, ולכן הוא נזכר כאן. */
   let activeRoom = '';
 
+  /** הפורט שאליו הקוד השמור כבר נאמר; 0 = עוד לא נאמר לאף מתאם. */
+  let roomAssertedPort = 0;
+
   /** מתי התחילה ההמתנה הנוכחית לחברותא; 0 = לא ממתינים. */
   let waitingSince = 0;
 
@@ -168,9 +171,11 @@
       name.textContent = peer.name || 'מכשיר ללא שם';
       main.appendChild(name);
 
-      // המתאם מדווח מקום מרוחק אחד בלבד, עם שם השולח. כשהוא שייך למחובר
-      // הזה, מקום הלימוד שלו מוצג בשורה שלו.
-      if (remote && remote.fromName && remote.fromName === peer.name) {
+      // המתאם מדווח מקום מרוחק אחד בלבד, עם מזהה השולח. כשהוא שייך
+      // למחובר הזה, מקום הלימוד שלו מוצג בשורה שלו. ההשוואה היא לפי
+      // המזהה ולא לפי השם: השם משתנה (המשתמש יכול לשנות אותו בכל רגע,
+      // והרשימה מציגה תמיד את החדש), ושני מכשירים יכולים לשאת אותו שם.
+      if (remote && remote.fromId && remote.fromId === peer.id) {
         const spot = document.createElement('span');
         spot.className = 'peer-spot';
         spot.textContent = describeSpot(remote.location);
@@ -320,6 +325,17 @@
         'להיות מוצהר ב-<code>network.allowlist</code> של התוסף. דווחו על כך, ' +
         'ובינתיים נסו להתקין מחדש את גרסת התוסף האחרונה.',
     },
+    http: {
+      status: 'המתאם עונה בשגיאה',
+      title: 'המתאם פועל, אך אינו עונה כשורה',
+      sub: 'התוכנה שעל המחשב הזה נמצאה, אבל היא מחזירה שגיאה במקום תשובה.',
+      bannerTitle: 'המתאם החזיר שגיאה',
+      html:
+        'זו אינה תקלת התקנה — המתאם רץ ועונה, אך משהו אצלו נכשל. ' +
+        'היומן שלו ב-<code>%LOCALAPPDATA%\\Chavruta\\companion.log</code> ' +
+        'אומר מה. אם זה חוזר, סגרו אותו והפעילו מחדש מתפריט התחל ' +
+        '("הפעלת מתאם חברותא"), ודווחו על כך.',
+    },
     notFound: {
       status: 'המתאם אינו פועל',
       title: 'המתאם אינו פועל',
@@ -351,6 +367,9 @@
     // בלי מתאם אין מי שיקרא את הרישום, ולכן גם אין מה להציג עליו.
     startupLoaded = false;
     el.companionCard.classList.add('hidden');
+    // המתאם שאליו נאמר הקוד אינו כאן יותר. מי שיימצא במקומו — גם אם
+    // הוא על אותו פורט — הוא תהליך אחר, שייתכן שמזווג לקוד אחר לגמרי.
+    roomAssertedPort = 0;
   }
 
   /**
@@ -383,17 +402,67 @@
     }
   }
 
-  async function refresh() {
+  /**
+   * מוודא שהמתאם שנמצא מזווג לקוד שהלשונית מציגה.
+   *
+   * `/hello` מדווח **אם** יש זיווג אך לא לאיזה קוד — הקוד עצמו אינו יוצא
+   * מהמתאם בכוונה. לכן הלשונית מציגה את הקוד שבזיכרון שלה ומניחה שהוא
+   * הקוד שבמתאם, וההנחה נשברת בכל מתאם שנשאר מזווג לקוד אחר: מופע ישן
+   * שנשאר תלוי על פורט אחר בטווח, או מתאם שהופעל עם `--room` משורת
+   * הפקודה. אז הסנכרון רץ בחדר אחד והמסך מראה חדר אחר — שקר שאין שום
+   * דרך לראות אותו מהלשונית.
+   *
+   * `setRoom` בצד המתאם יוצא מיד כשהקוד זהה, ולכן במצב הרגיל זו פעולת
+   * אפס — פעם אחת לכל מתאם שנמצא. מחזיר האם הקוד באמת נאמר.
+   *
+   * נאמר רק למתאם שמדווח על עצמו כמזווג: מתאם שאינו מזווג אינו מציג שום
+   * קוד ואין מה לתקן אצלו, וזיווג אוטומטי שלו היה מחזיר לחברותא מישהו
+   * שיצא ממנה בכוונה.
+   */
+  async function assertRoom(state) {
+    if (state.paired !== true || activeRoom === '') return false;
+    const port = Companion.port;
+    if (port === null || port === roomAssertedPort) return false;
     try {
-      const state = await Companion.hello();
-      clearBanner('companion');
-      renderState(state);
-      // פעם אחת לכל חיבור למתאם: הרישום אינו משתנה מעצמו, ואין טעם
-      // לתחקר אותו בכל רענון.
-      if (!startupLoaded) await loadStartup();
+      await Companion.setRoom(activeRoom);
+      roomAssertedPort = port;
+      return true;
     } catch (e) {
-      showFailure(e && e.kind);
+      // המתאם נעלם בין שתי הבקשות. הרענון הבא מחפש אותו מחדש וינסה שוב.
+      return false;
     }
+  }
+
+  /** רענון שכבר רץ, אם יש. ראו [refresh]. */
+  let refreshing = null;
+
+  /**
+   * קורא את מצב המתאם ומצייר אותו.
+   *
+   * רענון אחד בכל רגע: הקצב הוא 3 שניות וגבול הזמן של בקשה הוא 4, ולכן
+   * מתאם אטי לרגע היה מייצר בקשות חופפות שמציירות מצבים ישנים על חדשים.
+   * מי שקורא בזמן שרענון רץ מקבל את אותו הרענון.
+   */
+  function refresh() {
+    if (refreshing) return refreshing;
+    refreshing = (async function () {
+      try {
+        let state = await Companion.hello();
+        clearBanner('companion');
+        // אמירת הקוד מנקה את מצב החדר במתאם כשהוא היה בחדר אחר, ולכן
+        // המצב נקרא מחדש ולא מוצג זה שנקרא לפניה.
+        if (await assertRoom(state)) state = await Companion.hello();
+        renderState(state);
+        // פעם אחת לכל חיבור למתאם: הרישום אינו משתנה מעצמו, ואין טעם
+        // לתחקר אותו בכל רענון.
+        if (!startupLoaded) await loadStartup();
+      } catch (e) {
+        showFailure(e && e.kind);
+      } finally {
+        refreshing = null;
+      }
+    })();
+    return refreshing;
   }
 
   function startRefreshing() {
@@ -425,6 +494,8 @@
       await Companion.setRoom(code);
       await Otzaria.call('storage.set', { key: ROOM_KEY, value: code });
       activeRoom = code;
+      // הקוד נאמר לו כרגע במפורש; אין צורך שהרענון יאמר אותו שוב.
+      roomAssertedPort = Companion.port;
       Otzaria.call('ui.showSuccess', { message: 'מחובר לחברותא' });
       await refresh();
     } catch (e) {
@@ -439,6 +510,7 @@
     try {
       await Companion.setRoom('');
       activeRoom = '';
+      roomAssertedPort = 0;
       Otzaria.call('ui.showMessage', { message: 'יצאת מהחברותא' });
       await refresh();
     } catch (e) {

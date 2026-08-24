@@ -59,38 +59,35 @@ New-Item -ItemType Directory -Force $distDir | Out-Null
 $target = Join-Path $distDir "chavruta-$($manifest.version).otzplugin"
 if (Test-Path $target) { Remove-Item $target -Force }
 
-# תיקיות פיתוח אינן נכנסות לארכיון, בדיוק כמו באריזה של אוצריא.
+# תיקיות פיתוח אינן נכנסות לארכיון, בדיוק כמו באריזה של אוצריא. הבדיקה
+# היא על **כל** מקטע בנתיב היחסי ולא על השורש בלבד: תיקיית .git או
+# .dart_tool שיושבת בתוך תת-תיקייה נכנסה לחבילה בשקט.
 $excluded = @('.git', 'node_modules', '.idea', '.vscode', '__pycache__', '.claude', '.dart_tool')
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) ("chavruta_pack_" + [System.Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force $staging | Out-Null
-try {
-  Get-ChildItem $pluginDir -Force | Where-Object { $excluded -notcontains $_.Name } | ForEach-Object {
-    Copy-Item $_.FullName -Destination $staging -Recurse -Force
-  }
+$prefix = (Resolve-Path $pluginDir).Path.TrimEnd('\') + '\'
 
-  # לא Compress-Archive: ב-Windows PowerShell הוא כותב שמות ערכים עם
-  # לוכסן הפוך, בעוד שתקן ה-ZIP (ומפרק הארכיון של אוצריא) מצפה ל-'/'.
-  # שני האסמבלים: ZipFile יושב ב-FileSystem, ו-ZipArchiveMode ב-Compression.
-  Add-Type -AssemblyName System.IO.Compression
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $archive = [System.IO.Compression.ZipFile]::Open(
-    $target, [System.IO.Compression.ZipArchiveMode]::Create
-  )
-  try {
-    Get-ChildItem $staging -Recurse -File | ForEach-Object {
-      $entry = $_.FullName.Substring($staging.Length + 1).Replace('\', '/')
-      [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-        $archive, $_.FullName, $entry,
-        [System.IO.Compression.CompressionLevel]::Optimal
-      ) | Out-Null
+# לא Compress-Archive: ב-Windows PowerShell הוא כותב שמות ערכים עם
+# לוכסן הפוך, בעוד שתקן ה-ZIP (ומפרק הארכיון של אוצריא) מצפה ל-'/'.
+# שני האסמבלים: ZipFile יושב ב-FileSystem, ו-ZipArchiveMode ב-Compression.
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [System.IO.Compression.ZipFile]::Open(
+  $target, [System.IO.Compression.ZipArchiveMode]::Create
+)
+try {
+  Get-ChildItem $pluginDir -Recurse -File -Force | ForEach-Object {
+    $relative = $_.FullName.Substring($prefix.Length)
+    $segments = $relative.Split('\')
+    foreach ($segment in $segments) {
+      if ($excluded -contains $segment) { return }
     }
-  }
-  finally {
-    $archive.Dispose()
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+      $archive, $_.FullName, $segments -join '/',
+      [System.IO.Compression.CompressionLevel]::Optimal
+    ) | Out-Null
   }
 }
 finally {
-  Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+  $archive.Dispose()
 }
 
 $size = (Get-Item $target).Length
