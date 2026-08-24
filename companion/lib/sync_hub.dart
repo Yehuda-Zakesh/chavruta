@@ -55,6 +55,11 @@ class RemoteUpdate {
 class SyncHub {
   SyncHub({required this.config, required this.transport, this.onLog}) {
     transport.inbound.listen(_handleInbound);
+    // הסוקט קם מחדש אחרי נפילה ברשת. בזמן הנפילה החברותא הפסיקה לשמוע
+    // אותנו, ולכן מכריזים נוכחות מיד — במקום להמתין עד לפעימה הבאה.
+    transport.onRebound = () {
+      if (config.isPaired) unawaited(_announcePresence());
+    };
   }
 
   final CompanionConfig config;
@@ -83,13 +88,17 @@ class SyncHub {
   final List<Completer<void>> _waiters = [];
   Timer? _presenceTimer;
 
+  /// רמז על חוק חומת האש (ראו `firewall_check.dart`). נקבע מבחוץ, כי
+  /// הבדיקה היא הרצת תהליך חיצוני ואינה עניינו של ה-hub. `null` = לא ידוע.
+  bool? firewallRule;
+
   int get remoteSequence => _remoteSequence;
 
   Future<void> start() async {
     await transport.start();
     _presenceTimer = Timer.periodic(
       presenceInterval,
-      (_) => _announcePresence(),
+      (_) => unawaited(_announcePresence()),
     );
     if (config.isPaired) await _announcePresence();
   }
@@ -260,6 +269,9 @@ class SyncHub {
       'deviceName': config.deviceName,
       'paired': config.isPaired,
       'lanBound': transport.isBound,
+      'lanError': transport.lastError,
+      'firewallRule': firewallRule,
+      'clockSkewMinutes': transport.clockSkewMinutes,
       'remoteSequence': _remoteSequence,
       'remote': _remote?.toJson(),
       'localLocation': _localLocation?.toJson(),

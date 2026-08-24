@@ -52,6 +52,22 @@
    *  אם יש זיווג, אך לא את הקוד עצמו, ולכן הוא נזכר כאן. */
   let activeRoom = '';
 
+  /** מתי התחילה ההמתנה הנוכחית לחברותא; 0 = לא ממתינים. */
+  let waitingSince = 0;
+
+  /** אחרי כמה זמן של המתנה ריקה מוצג רמז מה לבדוק. שתי פעימות נוכחות
+   *  של המתאם (20 שניות כל אחת) — אחריהן כבר לא סביר שזה עניין של תזמון. */
+  const WAITING_HINT_MS = 45000;
+
+  function trackWaiting(waiting) {
+    if (!waiting) waitingSince = 0;
+    else if (waitingSince === 0) waitingSince = Date.now();
+  }
+
+  function waitingTooLong() {
+    return waitingSince !== 0 && Date.now() - waitingSince > WAITING_HINT_MS;
+  }
+
   // --- תצוגה ---------------------------------------------------------------
 
   function setStatus(kind, text) {
@@ -94,6 +110,19 @@
   function clearBanner(id) {
     const node = document.getElementById(id);
     if (node) node.remove();
+  }
+
+  /** טקסט שמגיע מהמתאם (הודעת שגיאה של המערכת) נכנס לבאנר כטקסט בלבד. */
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, function (ch) {
+      return {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      }[ch];
+    });
   }
 
   function describeSpot(location) {
@@ -170,6 +199,7 @@
     el.joinButton.textContent = paired ? 'עדכון קוד' : 'התחברות';
     el.leaveButton.classList.toggle('hidden', !paired);
     setRoomChip(paired ? activeRoom : '');
+    trackWaiting(paired && peers.length === 0);
 
     if (!paired) {
       setStatus('', 'לא מחובר לחברותא');
@@ -190,7 +220,10 @@
       setHero(
         'waiting',
         'ממתין לחברותא',
-        'אתם מחוברים לקוד. ברגע שהצד השני יקליד אצלו את אותו קוד, מקום הלימוד יסתנכרן.'
+        waitingTooLong()
+          ? 'עדיין אין אף אחד. בדקו ששני המחשבים על אותה רשת, שהקוד זהה בדיוק, ' +
+              'ושמתאם החברותא רץ גם בצד השני.'
+          : 'אתם מחוברים לקוד. ברגע שהצד השני יקליד אצלו את אותו קוד, מקום הלימוד יסתנכרן.'
       );
     }
 
@@ -206,11 +239,45 @@
         'lan',
         'error',
         'המתאם אינו מאזין לרשת',
-        'פורט 45870 תפוס או חסום על ידי חומת האש. סנכרון לא יעבוד עד שהפורט ' +
-          'יתפנה — בדקו שאין מתאם חברותא נוסף שרץ על המחשב.'
+        (state.lanError ? 'הסיבה שדווחה: ' + escapeHtml(state.lanError) + '. ' : '') +
+          'המתאם מנסה להתחבר מחדש כל כמה שניות, ולכן ניתוק רגעי של הרשת מסתדר ' +
+          'מעצמו. אם זה נמשך — בדקו שהמחשב מחובר לרשת, ושאין מתאם חברותא נוסף שרץ.'
       );
     } else {
       clearBanner('lan');
+    }
+
+    // רמז חומת האש מוצג רק כשהוא רלוונטי: מזווגים, ובכל זאת אין אף אחד
+    // ברשימה. הודעות החברותא הן תעבורה נכנסת שלא ביקשנו, ו-Windows חוסם
+    // אותה כברירת מחדל — כולל כשההיתר ניתן ל"רשתות פרטיות" בלבד והרשת
+    // הנוכחית מסומנת ציבורית.
+    if (paired && peers.length === 0 && state.firewallRule === false) {
+      banner(
+        'firewall',
+        '',
+        'ייתכן שחומת האש של Windows חוסמת',
+        'לא נמצא היתר נכנס למתאם החברותא. הריצו את המתקין שוב וסמנו את ' +
+          'הוספת חוק חומת האש, או אשרו ידנית ל-<code>ChavrutaCompanion.exe</code> ' +
+          'תעבורה נכנסת ב-UDP 45870 — גם ברשתות ציבוריות.'
+      );
+    } else {
+      clearBanner('firewall');
+    }
+
+    // הודעות החברותא מגיעות ונדחות בגלל השעה. בלי הבאנר הזה זה נראה
+    // בדיוק כמו "אין אף אחד ברשת", ואין שום דרך לנחש את הסיבה.
+    if (typeof state.clockSkewMinutes === 'number') {
+      banner(
+        'clock',
+        'error',
+        'השעונים של שני המחשבים אינם מסונכרנים',
+        'החברותא נמצאה, אך ההודעות שלה נדחות: הפרש של כ-' +
+          Math.abs(state.clockSkewMinutes) +
+          ' דקות בין השעונים. תקנו את השעה במחשב שסוטה ' +
+          '(הגדרות ← שעה ושפה ← סנכרן כעת), והסנכרון יחזור מיד.'
+      );
+    } else {
+      clearBanner('clock');
     }
   }
 

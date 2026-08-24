@@ -3,6 +3,21 @@ import 'dart:io';
 
 import 'protocol.dart';
 
+/// כתובת ה-broadcast של רשת link-local (169.254.x.x).
+const String linkLocalBroadcast = '169.254.255.255';
+
+/// כל כמה זמן נבדק שהסוקט חי, ואם לא — מנסים לבנות אותו מחדש.
+///
+/// ראו [LanTransport.reportSocketFailure] להסבר למה סוקט UDP ב-Windows
+/// מת מעצמו, ולמה בלי הבדיקה הזאת הסנכרון פשוט מפסיק לעבוד בלי סימן.
+const Duration socketWatchdogInterval = Duration(seconds: 5);
+
+/// כמה שידורים רצופים שבהם *אף* בייט לא יצא נחשבים לסוקט מת.
+///
+/// שידור שחוזר 0 הוא בדרך כלל חוצץ מלא לרגע, ולכן לא מגיבים לאחד בודד;
+/// שניים ברצף לכל היעדים כבר אומרים שהסוקט אינו שולח יותר כלום.
+const int deadSendThreshold = 2;
+
 /// שידור וקליטה של הודעות חברותא ברשת המקומית, על UDP broadcast.
 ///
 /// אין שרת ואין הגדרת כתובות: כל מתאם משדר לכל הרשת, וכל מתאם מסנן
@@ -17,16 +32,60 @@ class LanTransport {
 
   final void Function(String message)? onLog;
 
+  /// נקרא אחרי שהסוקט קם מחדש בעקבות נפילה. ה-hub משדר בעקבותיו נוכחות
+  /// מיידית, כדי שהחברותא לא תמתין עוד מחזור שלם כדי לראות אותנו שוב.
+  void Function()? onRebound;
+
   RawDatagramSocket? _socket;
+  Timer? _watchdog;
+
+  /// מונע שתי בנייות מקבילות של הסוקט (שומר הסף ושידור שנתקל בסוקט מת).
+  bool _binding = false;
+
+  /// אחרי [dispose] אין קמים מחדש — גם לא בעקבות שגיאה שהגיעה באיחור.
+  bool _disposed = false;
+
+  /// האם הסוקט נפל מאז שעלה, כלומר הקימה הבאה היא התאוששות ולא עלייה.
+  bool _recovering = false;
+
+  String? _lastError;
+
+  /// פער השעונים (בדקות) שבגללו נדחתה הודעה מהחברותא, או `null` אם אין
+  /// בעיה כזאת. מתאפס ברגע שהודעה כן מתקבלת.
+  int? _clockSkewMinutes;
+
+  int _deadSends = 0;
+  List<String> _lastTargets = const [];
+
   final _inbound = StreamController<SyncMessage>.broadcast();
 
   /// הודעות שעברו אימות חתימה, טריות, ואינן שלנו.
   Stream<SyncMessage> get inbound => _inbound.stream;
 
+  /// האם יש כרגע סוקט חי. **לא** "האם הצלחנו פעם" — התוסף מציג לפי זה
+  /// שהסנכרון מושבת, ולכן חובה שיהיה נכון גם אחרי נפילה.
   bool get isBound => _socket != null;
 
+  /// תיאור התקלה האחרונה ברשת, לתצוגה בתוסף וביומן. `null` = הכול תקין.
+  String? get lastError => _lastError;
+
+  /// פער השעונים מול החברותא, בדקות, כשהוא זה שמפיל את ההודעות.
+  int? get clockSkewMinutes => _clockSkewMinutes;
+
   Future<bool> start() async {
+    _watchdog ??= Timer.periodic(
+      socketWatchdogInterval,
+      (_) => unawaited(_bind()),
+    );
+    return _bind();
+  }
+
+  /// בונה את הסוקט אם אין. מחזיר האם יש סוקט חי בסוף הפעולה.
+  Future<bool> _bind() async {
+    if (_disposed) return false;
     if (_socket != null) return true;
+    if (_binding) return false;
+    _binding = true;
     try {
       final socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
@@ -43,46 +102,147 @@ class LanTransport {
           if (datagram == null) return;
           _handleDatagram(datagram);
         },
-        onError: (Object error) => onLog?.call('שגיאת קליטה ברשת: $error'),
+        // רק אם זה עדיין הסוקט הפעיל: שגיאה מאוחרת של סוקט שכבר הוחלף
+        // אסור לה להפיל את זה שקם במקומו.
+        onError: (Object error) {
+          if (identical(_socket, socket)) reportSocketFailure(error);
+        },
       );
       _socket = socket;
-      onLog?.call('מאזין לרשת המקומית על פורט $lanPort');
+      _lastError = null;
+      _deadSends = 0;
+      _lastTargets = const [];
+      if (_recovering) {
+        _recovering = false;
+        onLog?.call('הקשר לרשת המקומית חזר');
+        onRebound?.call();
+      } else {
+        onLog?.call('מאזין לרשת המקומית על פורט $lanPort');
+      }
       return true;
     } on SocketException catch (e) {
-      onLog?.call('כשל בהאזנה לפורט $lanPort: ${e.message}');
+      final reason = 'כשל בהאזנה לפורט $lanPort: ${e.message}';
+      // שומר הסף מנסה שוב כל כמה שניות, ולכן מדווחים רק על שינוי מצב —
+      // אחרת היומן היה מתמלא באותה שורה עד שהרשת חוזרת.
+      if (_lastError != reason) onLog?.call(reason);
+      _lastError = reason;
       return false;
+    } finally {
+      _binding = false;
     }
+  }
+
+  /// מטפל בסוקט שנפל, ומיד מנסה להקים אותו מחדש.
+  ///
+  /// **זה הלב של התיקון.** ב-Windows סוקט UDP מקבל שגיאות אסינכרוניות
+  /// שאינן קשורות לקליטה בכלל: שידור אל broadcast של כרטיס בלי מסלול,
+  /// או ניתוק Wi-Fi לרגע, מחזירים `network unreachable` (שגיאה 1231) על
+  /// הסוקט. ו-Dart, בכל שגיאה כזאת, **סוגר את הסוקט** (ראו
+  /// `_RawDatagramSocket` ב-socket_patch.dart של ה-SDK).
+  ///
+  /// מכאן ואילך המתאם היה נראה בריא לגמרי — ה-API המקומי ממשיך לענות,
+  /// והתוסף מציג "מחובר" — אבל שום דבר לא יוצא ולא נכנס: `send` על סוקט
+  /// סגור מחזיר 0 בשקט, בלי לזרוק. זו הסיבה ששני מחשבים לא מצאו זה את זה.
+  void reportSocketFailure(Object error) {
+    if (_disposed) return;
+    final wasBound = _socket != null;
+    _socket?.close();
+    _socket = null;
+    _deadSends = 0;
+    _lastError = error is SocketException ? error.message : '$error';
+    if (wasBound) {
+      _recovering = true;
+      onLog?.call('הקשר לרשת נפל ($_lastError) — מתחבר מחדש');
+    }
+    unawaited(_bind());
   }
 
   void _handleDatagram(Datagram datagram) {
     final roomCode = roomCodeProvider();
     if (roomCode == null || roomCode.isEmpty) return;
-    final message = SyncMessage.decode(datagram.data, roomCode);
+    final message = SyncMessage.decode(
+      datagram.data,
+      roomCode,
+      onClockSkew: _noteClockSkew,
+    );
     if (message == null) return;
+    _clockSkewMinutes = null;
     _inbound.add(message);
   }
 
-  /// משדר הודעה לכל הרשת. משדר גם ל-255.255.255.255 וגם ל-broadcast
-  /// המכוון של כל כרטיס רשת, כי חלק מהראוטרים והמתגים מפילים דווקא את
-  /// הכתובת הגלובלית.
+  /// הודעה מהחברותא שנדחתה על פער שעונים. מדווחים פעם אחת ולא על כל
+  /// הודעה — הן מגיעות כל 20 שניות, והיומן אינו מקום להצפה.
+  void _noteClockSkew(Duration skew) {
+    final minutes = skew.inMinutes;
+    if (_clockSkewMinutes == minutes) return;
+    _clockSkewMinutes = minutes;
+    onLog?.call(
+      'התקבלה הודעה חתומה מהחברותא אך היא נדחתה: השעונים של שני המחשבים '
+      'רחוקים זה מזה ב-${minutes.abs()} דקות. תקנו את השעה במחשב שסוטה.',
+    );
+  }
+
+  /// משדר הודעה לכל הרשת, בכל היעדים שמחזירה [_targets].
   Future<void> send(SyncMessage message) async {
-    final socket = _socket;
     final roomCode = roomCodeProvider();
-    if (socket == null || roomCode == null || roomCode.isEmpty) return;
+    if (roomCode == null || roomCode.isEmpty) return;
+
+    // סוקט שנפל ועדיין לא קם: מנסים כאן ולא ממתינים לשומר הסף, כדי
+    // שהודעה שהמשתמש גרם לה (מעבר דף) תצא מיד כשהרשת חוזרת.
+    if (_socket == null) await _bind();
+    final socket = _socket;
+    if (socket == null) return;
+
+    final targets = await _targets();
+    if (targets.isEmpty) {
+      // אין כרטיס רשת פעיל. שידור בכל זאת אל 255.255.255.255 היה מפיל
+      // את הסוקט בשגיאת "אין מסלול", ולכן פשוט אין למי לשדר עכשיו.
+      _noteTargets(targets);
+      return;
+    }
+    _noteTargets(targets);
 
     final bytes = message.encode(roomCode);
-    final targets = <InternetAddress>{
-      InternetAddress('255.255.255.255'),
-      ...await _directedBroadcastAddresses(),
-    };
-
+    var delivered = 0;
     for (final target in targets) {
       try {
-        socket.send(bytes, target, lanPort);
+        delivered += socket.send(bytes, InternetAddress(target), lanPort);
       } on SocketException catch (e) {
-        onLog?.call('כשל בשליחה אל ${target.address}: ${e.message}');
+        onLog?.call('כשל בשליחה אל $target: ${e.message}');
       }
     }
+
+    if (delivered > 0) {
+      _deadSends = 0;
+      return;
+    }
+    // שידור שלם שלא הוציא בייט אחד. ב-Dart זו החתימה של סוקט סגור,
+    // שאינו זורק אלא מחזיר 0 — הרשת השקטה שהתגלתה בשטח.
+    if (++_deadSends >= deadSendThreshold) {
+      reportSocketFailure(
+        SocketException('השידור אינו יוצא — הסוקט אינו פעיל'),
+      );
+    }
+  }
+
+  /// מדווח ליומן על יעדי השידור, אך ורק כשהם משתנים. זו שורת האבחון
+  /// שמראה בשטח לאיזו רשת המתאם באמת משדר.
+  void _noteTargets(List<String> targets) {
+    if (_listEquals(targets, _lastTargets)) return;
+    _lastTargets = targets;
+    onLog?.call(
+      targets.isEmpty
+          ? 'אין כרטיס רשת פעיל — אין למי לשדר'
+          : 'משדר אל ${targets.join(", ")}',
+    );
+  }
+
+  static bool _listEquals(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// כתובת ה-broadcast של הרשת שאליה שייכת [address], או `null` אם אינה
@@ -100,17 +260,43 @@ class LanTransport {
       final value = int.tryParse(octet);
       if (value == null || value < 0 || value > 255) return null;
     }
-    if (octets[0] == '169' && octets[1] == '254') return '169.254.255.255';
+    if (octets[0] == '169' && octets[1] == '254') return linkLocalBroadcast;
     return '${octets[0]}.${octets[1]}.${octets[2]}.255';
   }
 
-  /// כתובות ה-broadcast המכוונות של הכרטיסים הפעילים.
+  /// יעדי השידור עבור קבוצת כתובות IPv4 של כרטיסי הרשת.
   ///
-  /// כולל כתובות link-local, כדי שחיבור ישיר בכבל בין שני מחשבים — בלי
-  /// ראוטר ובלי DHCP — יעבוד. הכתובת הגלובלית נשלחת בכל מקרה, אבל בחיבור
-  /// כזה אין מסלול ברירת מחדל, ולכן דווקא הכתובות המכוונות הן שמגיעות.
-  Future<Set<InternetAddress>> _directedBroadcastAddresses() async {
-    final result = <InternetAddress>{};
+  /// - אין כתובות בכלל — אין יעדים. שידור אל 255.255.255.255 בלי רשת
+  ///   מפיל את הסוקט (ראו [reportSocketFailure]), וזה בדיוק המחיר שאסור
+  ///   לשלם על מחשב שרק התנתק לרגע.
+  /// - יש רשת אמיתית — משדרים אל הכתובת הגלובלית ואל ה-broadcast המכוון
+  ///   של כל רשת כזאת. הגלובלית לבדה אינה מספיקה כשיש כמה כרטיסים, כי
+  ///   היא יוצאת רק דרך מסלול ברירת המחדל.
+  /// - **כתובות link-local נכללות רק כשאין שום רשת אמיתית.** על מחשב
+  ///   רגיל הן שייכות לכרטיסים וירטואליים (Wi-Fi Direct, מכונות
+  ///   וירטואליות) שאין להם מסלול, ושידור אליהם הוא בדיוק מה שהרג את
+  ///   הסוקט. כשהן היחידות — זה חיבור ישיר בכבל בין שני מחשבים, ואז הן
+  ///   הרשת היחידה שיש, ובלעדיהן החיבור הזה לא היה עובד כלל.
+  static List<String> broadcastTargetsFor(Iterable<String> addresses) {
+    final routable = <String>{};
+    var hasLinkLocal = false;
+    for (final address in addresses) {
+      final broadcast = broadcastAddressForIPv4(address);
+      if (broadcast == null) continue;
+      if (broadcast == linkLocalBroadcast) {
+        hasLinkLocal = true;
+      } else {
+        routable.add(broadcast);
+      }
+    }
+    if (routable.isNotEmpty) {
+      return ['255.255.255.255', ...routable];
+    }
+    return hasLinkLocal ? ['255.255.255.255', linkLocalBroadcast] : const [];
+  }
+
+  Future<List<String>> _targets() async {
+    final addresses = <String>[];
     try {
       final interfaces = await NetworkInterface.list(
         type: InternetAddressType.IPv4,
@@ -119,17 +305,19 @@ class LanTransport {
       );
       for (final interface in interfaces) {
         for (final address in interface.addresses) {
-          final broadcast = broadcastAddressForIPv4(address.address);
-          if (broadcast != null) result.add(InternetAddress(broadcast));
+          addresses.add(address.address);
         }
       }
     } catch (e) {
       onLog?.call('לא ניתן לרשום כרטיסי רשת: $e');
     }
-    return result;
+    return broadcastTargetsFor(addresses);
   }
 
   Future<void> dispose() async {
+    _disposed = true;
+    _watchdog?.cancel();
+    _watchdog = null;
     _socket?.close();
     _socket = null;
     await _inbound.close();

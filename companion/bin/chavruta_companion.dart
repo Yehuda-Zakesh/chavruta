@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:chavruta_companion/config.dart';
 import 'package:chavruta_companion/console_window.dart';
+import 'package:chavruta_companion/firewall_check.dart';
 import 'package:chavruta_companion/lan_transport.dart';
 import 'package:chavruta_companion/local_api.dart';
 import 'package:chavruta_companion/protocol.dart';
@@ -160,6 +161,21 @@ Future<void> main(List<String> argv) async {
     config.isPaired
         ? 'מחובר לחברותא בשם "${config.deviceName}"'
         : 'לא מזווג — ממתין לקוד חברותא מהתוסף',
+  );
+
+  // בדיקת חומת האש היא הרצת netsh, ולכן היא רצה ברקע ואינה מעכבת את
+  // העלייה. התוצאה נשלפת מאוחר יותר דרך /hello, כשהתוסף מציג למה
+  // ייתכן שאין חברותא ברשימה.
+  unawaited(
+    hasInboundFirewallRule().then((allowed) {
+      hub.firewallRule = allowed;
+      if (allowed == false) {
+        log(
+          'לא נמצא חוק חומת אש נכנס עבור ${Platform.resolvedExecutable} — '
+          'ייתכן ש-Windows חוסם את ההודעות מהחברותא',
+        );
+      }
+    }),
   );
 
   final done = Completer<void>();

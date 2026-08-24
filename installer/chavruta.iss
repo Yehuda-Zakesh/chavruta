@@ -12,9 +12,9 @@
 ; אם המשגר לא נבנה (MSVC אינו מותקן על מכונת הבנייה), המתקין נופל חזרה לרישום
 ; המתאם עצמו עם --hidden — מה שהיה קודם, כולל החלון ב-Windows 11.
 ;
-; ההתקנה היא למשתמש הנוכחי ואינה דורשת UAC. כשמריצים את המתקין כמנהל, הוא
-; מוסיף גם חוק חומת אש ל-UDP 45870; אחרת Windows יציג את בקשת האישור הרגילה
-; בפעם הראשונה שהמתאם מאזין לרשת.
+; ההתקנה היא למשתמש הנוכחי ואינה דורשת UAC. היוצא מן הכלל היחיד הוא חוק חומת
+; האש ל-UDP 45870, שבלעדיו Windows חוסם את הודעות החברותא: עליו מתבקשות
+; הרשאות מנהל פעם אחת, בסוף ההתקנה, וסירוב אינו מכשיל אותה. ראו [Code].
 
 #define MyAppName "מתאם חברותא"
 #define MyAppPublisher "יהודה זקש"
@@ -59,7 +59,7 @@ AppUpdatesURL={#MyAppURL}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; lowest = התקנה למשתמש הנוכחי בלי UAC. מי שמריץ כמנהל יקבל התקנה לכל
-; המשתמשים, ואז גם חוק חומת האש נוסף אוטומטית.
+; המשתמשים, ואז גם חוק חומת האש נוסף בלי בקשת הרשאות נוספת.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline
 DefaultDirName={autopf}\Chavruta
@@ -83,7 +83,10 @@ Name: "hebrew"; MessagesFile: "compiler:Languages\Hebrew.isl"
 
 [Tasks]
 Name: "startup"; Description: "הפעלת המתאם אוטומטית עם הכניסה למחשב (מומלץ — בלעדיו הסנכרון לא יעבוד)"
-Name: "firewall"; Description: "הוספת חוק חומת אש ל-UDP {#LanPort} (דורש הרשאות מנהל)"; Check: IsAdminInstallMode
+; לא מוגבל להתקנת מנהל: החוק נוסף דרך בקשת הרשאות חד-פעמית (ראו [Code]).
+; זה השלב שבלעדיו הכי הרבה משתמשים נשארים בלי סנכרון — הודעות החברותא הן
+; תעבורה נכנסת שלא התבקשה, ו-Windows חוסם אותה כברירת מחדל.
+Name: "firewall"; Description: "הוספת חוק חומת אש ל-UDP {#LanPort} (מומלץ — בלעדיו Windows עלול לחסום את החברותא)"
 
 [Files]
 Source: "{#DistDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -114,16 +117,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "ChavrutaCompanion"; Flags: deletevalue; Tasks: not startup
 
 [Run]
-; חוק חומת אש לתעבורת ה-broadcast של המתאם. רק בהתקנת מנהל — בהתקנה
-; למשתמש בודד Windows ישאל את המשתמש בפעם הראשונה, וזה מספיק.
-;
-; profile=any ולא private בלבד: נקודה חמה שמחשב או טלפון משתף מסומנת אצל
-; Windows כרשת ציבורית לא מעט פעמים, וזה תרחיש השימוש המרכזי. הפתיחה אינה
-; מסוכנת — המתאם מקבל רק הודעות חתומות HMAC במפתח שנגזר מקוד החברותא,
-; וכל השאר נזרק בשקט.
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Chavruta Companion (UDP-In)"" dir=in action=allow protocol=UDP localport={#LanPort} program=""{app}\{#MyAppExeName}"" profile=any"; Flags: runhidden waituntilterminated; Tasks: firewall; StatusMsg: "מוסיף חוק חומת אש…"
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Chavruta Companion (UDP-Out)"" dir=out action=allow protocol=UDP program=""{app}\{#MyAppExeName}"" profile=any"; Flags: runhidden waituntilterminated; Tasks: firewall
-
+; חוקי חומת האש אינם כאן אלא ב-[Code]: הם דורשים הרשאות מנהל, וההתקנה
+; הרגילה אינה מורמת. ראו ApplyFirewallRules.
 Filename: "{app}\{#StartExe}"; Parameters: "{#StartArgs}"; Description: "הפעלת המתאם עכשיו"; Flags: nowait postinstall skipifsilent runhidden
 #if PluginFile != ""
 Filename: "{app}\{#PluginFile}"; Description: "התקנת תוסף החברותא באוצריא (אוצריא תיפתח)"; Flags: postinstall shellexec skipifsilent unchecked
@@ -138,3 +133,60 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 ; הלוג נוצר בזמן ריצה ולכן אינו מנוהל על ידי המתקין. הקונפיג (קוד החברותא
 ; ושם המכשיר) נשאר בכוונה, כדי ששדרוג לא ידרוש זיווג מחדש.
 Type: files; Name: "{localappdata}\Chavruta\companion.log"
+
+[Code]
+{ חוקי חומת האש של המתאם.
+
+  למה כאן ולא ב-[Run]: ההתקנה היא PrivilegesRequired=lowest, כלומר בלי UAC,
+  ואילו netsh דורש הרשאות מנהל. כאן עולה בקשת הרשאות אחת בלבד — כל ארבע
+  הפקודות רצות בתוך cmd יחיד — ומי שמסרב מקבל התקנה תקינה בלי החוק.
+
+  למה בכלל: הודעות החברותא מגיעות ב-UDP broadcast, כלומר תעבורה נכנסת שלא
+  התבקשה, ו-Windows חוסם אותה כברירת מחדל. חלון האישור שהוא מציג במקום זה
+  מסמן כברירת מחדל "רשתות פרטיות" בלבד — ורשת ביתית או נקודה חמה מסומנות
+  אצלו לא פעם כ"ציבורית". להישען עליו פירושו משתמשים שהמתאם רץ אצלם ואינו
+  שומע כלום. לכן profile=any.
+
+  הפתיחה אינה מסוכנת: המתאם מקבל רק הודעות חתומות HMAC במפתח שנגזר מקוד
+  החברותא, וכל השאר נזרק בשקט.
+
+  המחיקה שלפני ההוספה: netsh add מוסיף חוק נוסף בכל הרצה, ובלעדיה כל שדרוג
+  היה מותיר עוד עותק ברשימת החוקים. }
+procedure ApplyFirewallRules;
+var
+  Exe, Cmd: String;
+  ResultCode: Integer;
+begin
+  Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  Cmd :=
+    '/c netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-In)" >nul 2>&1' +
+    ' & netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-Out)" >nul 2>&1' +
+    ' & netsh advfirewall firewall add rule name="Chavruta Companion (UDP-In)"' +
+    ' dir=in action=allow protocol=UDP localport={#LanPort} program="' + Exe + '" profile=any' +
+    ' & netsh advfirewall firewall add rule name="Chavruta Companion (UDP-Out)"' +
+    ' dir=out action=allow protocol=UDP program="' + Exe + '" profile=any';
+
+  if ShellExec('runas', ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    exit;
+
+  { סירוב לבקשת ההרשאות, או netsh שנכשל. ההתקנה תקינה, אבל ייתכן שהסנכרון
+    ייחסם — ועדיף שהמשתמש ידע את זה עכשיו ולא אחרי חצי שעה של המתנה. }
+  if not WizardSilent then
+    MsgBox(
+      'לא נוסף חוק חומת אש.' + #13#10#13#10 +
+      'אם המחשבים לא ימצאו זה את זה, הריצו את המתקין שוב ואשרו את בקשת ' +
+      'ההרשאות — או אשרו ידנית ל-ChavrutaCompanion.exe תעבורה נכנסת ב-UDP ' +
+      '{#LanPort}, כולל ברשתות ציבוריות.',
+      mbInformation, MB_OK);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and WizardIsTaskSelected('firewall') then
+  begin
+    { בהתקנה שקטה אין למי להציג בקשת הרשאות. אם היא כבר מורמת — אין בקשה
+      בכלל, והחוק נוסף גם שם. }
+    if IsAdmin or (not WizardSilent) then
+      ApplyFirewallRules;
+  end;
+end;

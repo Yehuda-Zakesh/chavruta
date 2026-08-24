@@ -92,8 +92,13 @@ $compile = "cl /nologo /W4 /O1 /GS- /c `"$source`" /Fo`"$obj`""
 $resource = "rc /nologo /fo `"$res`" `"$script`""
 $link = "link /nologo /subsystem:windows /entry:start /nodefaultlib /opt:ref /out:`"$exe`" `"$obj`" `"$res`" kernel32.lib"
 
+# תיקיית ה-Installer של Visual Studio מצורפת ל-PATH: vcvars64.bat קורא
+# בפנים ל-vswhere.exe **בשם בלבד**, ובסביבה שאין בה את התיקייה ב-PATH הוא
+# נופל על "'vswhere.exe' is not recognized" עוד לפני שהקימפול מתחיל.
+$vsInstaller = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer"
+
 if (Test-Path $exe) { Remove-Item $exe -Force }
-& cmd /c "call `"$vcvars`" >nul && cd /d `"$PSScriptRoot`" && $resource && $compile && $link"
+& cmd /c "set `"PATH=%PATH%;$vsInstaller`" && call `"$vcvars`" >nul && cd /d `"$PSScriptRoot`" && $resource && $compile && $link"
 if ($LASTEXITCODE -ne 0) { throw "בניית המשגר נכשלה (קוד יציאה $LASTEXITCODE)" }
 if (-not (Test-Path $exe)) { throw "בניית המשגר לא הפיקה את $exe" }
 

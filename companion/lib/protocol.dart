@@ -129,10 +129,15 @@ class SyncMessage {
 
   /// מפענח ומאמת. מחזיר `null` לכל הודעה שאינה שייכת לחדר הזה, אינה
   /// חתומה נכון, או אינה טרייה — בשקט, כי ברשת משותפת זה מצב רגיל.
+  /// [onClockSkew] נקרא כשההודעה **חתומה נכון** אך נדחתה על הזמן, ומקבל
+  /// את הפרש הזמן. זה המצב היחיד שבו אפשר לדעת בוודאות שההודעה הגיעה
+  /// מהחברותא ובכל זאת נזרקה, ובלעדיו הוא בלתי ניתן לאבחון: השעון של אחד
+  /// המחשבים סוטה ביותר מ-[freshnessWindow], והסנכרון פשוט שותק.
   static SyncMessage? decode(
     List<int> bytes,
     String normalizedRoomCode, {
     DateTime? now,
+    void Function(Duration skew)? onClockSkew,
   }) {
     final Object? raw;
     try {
@@ -183,7 +188,13 @@ class SyncMessage {
 
     final reference = now ?? DateTime.now();
     final age = reference.millisecondsSinceEpoch - timestampMs;
-    if (age.abs() > freshnessWindow.inMilliseconds) return null;
+    if (age.abs() > freshnessWindow.inMilliseconds) {
+      // החתימה כבר אומתה, ולכן ההודעה ודאי מהחברותא — והדחייה היא פער
+      // שעונים ולא רעש רשת. מדווחים החוצה כדי שאפשר יהיה לומר למשתמש מה
+      // לתקן, במקום סנכרון שפשוט אינו קורה.
+      onClockSkew?.call(Duration(milliseconds: age));
+      return null;
+    }
 
     // עדכון מיקום בלי מיקום תקין הוא הודעה שבורה.
     if (type == SyncMessageType.location && message.location == null) return null;

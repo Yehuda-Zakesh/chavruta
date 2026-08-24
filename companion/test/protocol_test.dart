@@ -180,5 +180,35 @@ void main() {
       expect(SyncMessage.decode(utf8.encode('[]'), room), isNull);
       expect(SyncMessage.decode(utf8.encode('{}'), room), isNull);
     });
+
+    test('דחייה על פער שעונים מדווחת החוצה, ודחייה על חתימה לא', () {
+      // ההבחנה הזו היא כל העניין: הודעה שחתומה נכון ונדחתה על הזמן ודאי
+      // הגיעה מהחברותא, ולכן אפשר לומר למשתמש מה לתקן. הודעה עם חתימה
+      // שגויה היא רעש רשת, ואסור שתייצר אזהרה.
+      final skews = <Duration>[];
+      final stale = buildMessage(
+        timestampMs: DateTime.now().millisecondsSinceEpoch -
+            freshnessWindow.inMilliseconds -
+            const Duration(minutes: 7).inMilliseconds,
+      );
+      expect(
+        SyncMessage.decode(stale.encode(room), room, onClockSkew: skews.add),
+        isNull,
+      );
+      expect(skews, hasLength(1));
+      expect(skews.first.inMinutes, greaterThanOrEqualTo(11));
+
+      skews.clear();
+      SyncMessage.decode(
+        tamper(stale, 'sig', 'x' * 32),
+        room,
+        onClockSkew: skews.add,
+      );
+      expect(skews, isEmpty);
+
+      skews.clear();
+      SyncMessage.decode(buildMessage().encode(room), room, onClockSkew: skews.add);
+      expect(skews, isEmpty, reason: 'הודעה טרייה אינה מדווחת על פער');
+    });
   });
 }
