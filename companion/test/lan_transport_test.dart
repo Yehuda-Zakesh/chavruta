@@ -137,17 +137,33 @@ void main() {
   });
 
   group('מוני האבחון', () {
-    test('עולים מאופסים, והשידור של עצמנו נספר כמקומי', () async {
-      final transport = LanTransport(roomCodeProvider: () => 'בדיקה');
+    test('עולים מאופסים', () async {
+      final transport = LanTransport(roomCodeProvider: () => 'בדיקה', port: 0);
       expect(await transport.start(), isTrue);
 
       expect(transport.datagramsReceived, 0);
       expect(transport.datagramsFromOthers, 0);
       expect(transport.datagramsRejected, 0);
       expect(transport.lastRemoteSource, isNull);
-      expect(transport.routes, isNotEmpty, reason: 'הכרטיסים נמנים בעלייה');
 
-      await transport.send(
+      await transport.dispose();
+    });
+
+    test('דטגרמה נספרת, ומהמחשב הזה אינה נחשבת "ממחשב אחר"', () async {
+      // פורט 0 ו-unicast אל ה-loopback, ולא הפורט האמיתי ו-broadcast.
+      // שתי הבחירות נובעות מאותו כישלון: הבדיקה הראשונה כאן נשענה על כך
+      // ש-broadcast חוזר אל השולח — נכון על מחשב אמיתי, וזה הבסיס לכל
+      // האבחון — אבל שרתי בנייה מסננים אותו, והיא עברה על שרת אחד ונפלה
+      // על אחר. הניסיון השני, unicast אל הפורט האמיתי, נפל כאן: הפורט
+      // משותף ב-reuseAddress עם המתאם המותקן, ו-unicast מגיע רק לאחד
+      // מהם. פורט פרטי מסלק את שתי התלויות.
+      final transport = LanTransport(roomCodeProvider: () => 'בדיקה', port: 0);
+      expect(await transport.start(), isTrue);
+      final remoteBefore = transport.datagramsFromOthers;
+
+      final prodder = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      addTearDown(prodder.close);
+      prodder.send(
         SyncMessage(
           type: SyncMessageType.presence,
           roomHash: SyncMessage.hashRoomCode('בדיקה'),
@@ -155,17 +171,16 @@ void main() {
           senderName: 'עצמי',
           timestampMs: DateTime.now().millisecondsSinceEpoch,
           sequence: 1,
-        ),
+        ).encode('בדיקה'),
+        InternetAddress.loopbackIPv4,
+        transport.boundPort!,
       );
-      await _waitFor(() => transport.datagramsReceived > 0);
 
-      // זו בדיקת הלופבק שכל האבחון נשען עליה: broadcast חוזר אל השולח,
-      // ולכן קליטה שהיא אפס פירושה סוקט חסום ולא "אין אף אחד ברשת".
-      expect(transport.datagramsReceived, greaterThan(0));
+      await _waitFor(() => transport.datagramsReceived > 0);
       expect(
         transport.datagramsFromOthers,
-        0,
-        reason: 'השידור של עצמנו אינו "מחשב אחר"',
+        remoteBefore,
+        reason: 'מקור loopback הוא המחשב הזה, ולא חברותא',
       );
       expect(transport.datagramsRejected, 0);
 

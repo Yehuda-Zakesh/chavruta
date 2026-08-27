@@ -65,7 +65,16 @@ class LanTransport {
     required this.roomCodeProvider,
     this.onLog,
     Duration? rebindMinUptime,
+    this.port = lanPort,
   }) : rebindMinUptime = rebindMinUptime ?? immediateRebindMinUptime;
+
+  /// הפורט שעליו מאזינים ואליו משדרים. פרמטר ולא הקבוע [lanPort] ישירות,
+  /// כדי שבדיקות יקבלו פורט משלהן: הפורט האמיתי משותף (`reuseAddress`) עם
+  /// כל מתאם אחר שרץ על המחשב, ו-unicast אליו מגיע רק לאחד מהם — כלומר
+  /// בדיקה שנשענת עליו נכשלת או עוברת לפי מה שרץ במקרה ברקע.
+  ///
+  /// `0` = פורט חופשי שהמערכת בוחרת; ראו [boundPort].
+  final int port;
 
   /// הרף שמתחתיו נפילה נחשבת "מת מהשידור" ואינה זוכה לקימה מיידית.
   /// פרמטר ולא קבוע גלובלי, כדי שבדיקות יבדקו את שני הענפים בלי לישון.
@@ -157,8 +166,12 @@ class LanTransport {
   /// פער השעונים מול החברותא, בדקות, כשהוא זה שמפיל את ההודעות.
   int? get clockSkewMinutes => _clockSkewMinutes;
 
-  /// כמה דטגרמות נקלטו על פורט [lanPort] מאז העלייה — כולל השידור של
-  /// עצמנו שחוזר. אפס = הקליטה חסומה. ראו [_received].
+  /// הפורט שהסוקט קשור אליו בפועל, או `null` כשאין סוקט. שונה מ-[port]
+  /// רק כשביקשו `0`, כלומר בבדיקות.
+  int? get boundPort => _socket?.port;
+
+  /// כמה דטגרמות נקלטו על [port] מאז העלייה — כולל השידור של עצמנו
+  /// שחוזר. אפס = הקליטה חסומה. ראו [_received].
   int get datagramsReceived => _received;
 
   /// מתוכן, כמה הגיעו מכתובת שאינה של המחשב הזה.
@@ -195,7 +208,7 @@ class LanTransport {
     try {
       final socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
-        lanPort,
+        port,
         // מאפשר לכמה מתאמים על אותו מחשב לחלוק את הפורט. בשידור broadcast
         // כל אחד מהם מקבל עותק, ולכן שני מופעי אוצריא במחשב אחד עובדים.
         reuseAddress: true,
@@ -226,11 +239,11 @@ class LanTransport {
         onLog?.call('הקשר לרשת המקומית חזר');
         onRebound?.call();
       } else {
-        onLog?.call('מאזין לרשת המקומית על פורט $lanPort');
+        onLog?.call('מאזין לרשת המקומית על פורט ${_socket?.port ?? port}');
       }
       return true;
     } on SocketException catch (e) {
-      final reason = 'כשל בהאזנה לפורט $lanPort: ${e.message}';
+      final reason = 'כשל בהאזנה לפורט $port: ${e.message}';
       // שומר הסף מנסה שוב כל כמה שניות, ולכן מדווחים רק על שינוי מצב —
       // אחרת היומן היה מתמלא באותה שורה עד שהרשת חוזרת.
       if (_lastError != reason) onLog?.call(reason);
@@ -286,7 +299,11 @@ class LanTransport {
     // עונים עליה היא "מה בכלל מגיע לסוקט", ולא "מה קיבלנו".
     _received++;
     final source = datagram.address.address;
-    final remote = !_localAddresses.contains(source);
+    // loopback הוא המחשב הזה בהגדרה. מניית הכרטיסים מדלגת עליו (ובצדק —
+    // אין לו broadcast לשדר אליו), ולכן בלי התנאי הזה דטגרמה מ-127.0.0.1
+    // הייתה נספרת כ"ממחשב אחר" ומזייפת את האבחנה.
+    final remote =
+        !datagram.address.isLoopback && !_localAddresses.contains(source);
     if (remote) {
       _receivedRemote++;
       _lastRemoteSource = source;
@@ -346,7 +363,7 @@ class LanTransport {
       final sender = await _senderFor(route.local);
       if (sender == null) continue;
       try {
-        final sent = sender.send(bytes, InternetAddress(route.broadcast), lanPort);
+        final sent = sender.send(bytes, InternetAddress(route.broadcast), port);
         delivered += sent;
         // סוקט סגור אינו זורק אלא מחזיר 0 בשקט. זורקים אותו כאן, והשידור
         // הבא יבנה אותו מחדש — במקום כרטיס שנשאר אילם לנצח.
