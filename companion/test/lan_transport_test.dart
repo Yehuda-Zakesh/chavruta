@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:chavruta_companion/lan_transport.dart';
+import 'package:chavruta_companion/protocol.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -47,46 +48,128 @@ void main() {
     });
   });
 
-  group('broadcastTargetsFor', () {
-    test('רשת רגילה — הכתובת הגלובלית וה-broadcast המכוון', () {
-      expect(LanTransport.broadcastTargetsFor(['192.168.1.7']), [
-        '255.255.255.255',
-        '192.168.1.255',
+  group('broadcastRoutesFor', () {
+    test('רשת רגילה — ה-broadcast המכוון, מכתובת הכרטיס', () {
+      expect(LanTransport.broadcastRoutesFor(['192.168.1.7']), [
+        (local: '192.168.1.7', broadcast: '192.168.1.255'),
       ]);
     });
 
-    test('כמה כרטיסים — כל רשת מקבלת את ה-broadcast שלה', () {
-      // הכתובת הגלובלית יוצאת רק דרך מסלול ברירת המחדל, ולכן בלי
-      // הכתובות המכוונות מחשב עם Wi-Fi ונקודה חמה משדר רק לאחת מהן.
-      final targets = LanTransport.broadcastTargetsFor([
-        '192.168.1.7',
-        '192.168.137.1',
-      ]);
-      expect(targets, contains('192.168.1.255'));
-      expect(targets, contains('192.168.137.255'));
+    test('255.255.255.255 אינו ביעדים לעולם', () {
+      // הכתובת הגלובלית יוצאת רק דרך מסלול ברירת המחדל — כלומר דרך
+      // הכרטיס שה-broadcast המכוון שלו כבר ברשימה — ועל מחשב בלי מסלול
+      // כזה השליחה אליה מפילה את הסוקט בלופ אינסופי.
+      for (final addresses in [
+        ['192.168.1.7'],
+        ['169.254.10.2'],
+        ['192.168.1.7', '169.254.10.2', '10.0.0.5'],
+      ]) {
+        expect(
+          LanTransport.broadcastRoutesFor(addresses).map((r) => r.broadcast),
+          isNot(contains('255.255.255.255')),
+          reason: 'עבור $addresses',
+        );
+      }
     });
 
-    test('כתובת link-local נזרקת כשיש רשת אמיתית', () {
-      // 169.254 על מחשב שמחובר לרשת שייכת לכרטיס וירטואלי (Wi-Fi Direct,
-      // מכונה וירטואלית) שאין לו מסלול. שידור אליו מחזיר "אין מסלול",
-      // ו-Dart סוגר בעקבותיו את הסוקט — כלומר הסנכרון מת.
+    test('כמה כרטיסים — כל אחד משדר מעצמו אל הרשת שלו', () {
       expect(
-        LanTransport.broadcastTargetsFor(['192.168.1.7', '169.254.10.2']),
-        ['255.255.255.255', '192.168.1.255'],
+        LanTransport.broadcastRoutesFor(['192.168.1.7', '192.168.137.1']),
+        [
+          (local: '192.168.1.7', broadcast: '192.168.1.255'),
+          (local: '192.168.137.1', broadcast: '192.168.137.255'),
+        ],
       );
     });
 
-    test('link-local לבדה נשמרת — זה חיבור ישיר בכבל', () {
-      expect(LanTransport.broadcastTargetsFor(['169.254.10.2']), [
-        '255.255.255.255',
-        '169.254.255.255',
+    test('link-local נכללת גם כשיש רשת אמיתית', () {
+      // זה חיבור ישיר בין שני מחשבים (כבל, Bluetooth PAN, Wi-Fi Direct)
+      // במקביל ל-Wi-Fi. זריקתה כאן הייתה מבטלת אותו, כלומר הופכת את
+      // הסנכרון לתלוי ראוטר. שידור אליה אינו מפיל את הסוקט — לכרטיסים
+      // האלה יש מסלול on-link.
+      final routes = LanTransport.broadcastRoutesFor([
+        '192.168.1.7',
+        '169.254.10.2',
+      ]);
+      expect(routes, contains((local: '192.168.1.7', broadcast: '192.168.1.255')));
+      expect(
+        routes,
+        contains((local: '169.254.10.2', broadcast: '169.254.255.255')),
+      );
+    });
+
+    test('link-local לבדה — חיבור בלי ראוטר כלל', () {
+      expect(LanTransport.broadcastRoutesFor(['169.254.10.2']), [
+        (local: '169.254.10.2', broadcast: '169.254.255.255'),
       ]);
     });
 
-    test('בלי כרטיס רשת אין יעדים בכלל', () {
+    test('כמה כרטיסים על אותה רשת link-local — כל אחד מסלול לעצמו', () {
+      // זה בדיוק המצב האופליין ב-Windows: Wi-Fi Direct וירטואלי, עוד אחד,
+      // ו-Bluetooth PAN — שלושתם ב-169.254/16. מסלול אחד היה יוצא דרך
+      // אחד מהם בלבד, ולא דווקא זה שהחברותא נמצאת בצדו.
+      expect(
+        LanTransport.broadcastRoutesFor([
+          '169.254.156.84',
+          '169.254.227.62',
+          '169.254.73.204',
+        ]),
+        [
+          (local: '169.254.156.84', broadcast: '169.254.255.255'),
+          (local: '169.254.227.62', broadcast: '169.254.255.255'),
+          (local: '169.254.73.204', broadcast: '169.254.255.255'),
+        ],
+      );
+    });
+
+    test('אותה כתובת פעמיים אינה מסלול כפול', () {
+      expect(
+        LanTransport.broadcastRoutesFor(['192.168.1.7', '192.168.1.7']),
+        [(local: '192.168.1.7', broadcast: '192.168.1.255')],
+      );
+    });
+
+    test('בלי כרטיס רשת אין מסלולים בכלל', () {
       // ולא שידור אל 255.255.255.255, שהיה מפיל את הסוקט על מחשב מנותק.
-      expect(LanTransport.broadcastTargetsFor(const []), isEmpty);
-      expect(LanTransport.broadcastTargetsFor(['לא כתובת']), isEmpty);
+      expect(LanTransport.broadcastRoutesFor(const []), isEmpty);
+      expect(LanTransport.broadcastRoutesFor(['לא כתובת']), isEmpty);
+    });
+  });
+
+  group('מוני האבחון', () {
+    test('עולים מאופסים, והשידור של עצמנו נספר כמקומי', () async {
+      final transport = LanTransport(roomCodeProvider: () => 'בדיקה');
+      expect(await transport.start(), isTrue);
+
+      expect(transport.datagramsReceived, 0);
+      expect(transport.datagramsFromOthers, 0);
+      expect(transport.datagramsRejected, 0);
+      expect(transport.lastRemoteSource, isNull);
+      expect(transport.routes, isNotEmpty, reason: 'הכרטיסים נמנים בעלייה');
+
+      await transport.send(
+        SyncMessage(
+          type: SyncMessageType.presence,
+          roomHash: SyncMessage.hashRoomCode('בדיקה'),
+          senderId: 'self000000000000',
+          senderName: 'עצמי',
+          timestampMs: DateTime.now().millisecondsSinceEpoch,
+          sequence: 1,
+        ),
+      );
+      await _waitFor(() => transport.datagramsReceived > 0);
+
+      // זו בדיקת הלופבק שכל האבחון נשען עליה: broadcast חוזר אל השולח,
+      // ולכן קליטה שהיא אפס פירושה סוקט חסום ולא "אין אף אחד ברשת".
+      expect(transport.datagramsReceived, greaterThan(0));
+      expect(
+        transport.datagramsFromOthers,
+        0,
+        reason: 'השידור של עצמנו אינו "מחשב אחר"',
+      );
+      expect(transport.datagramsRejected, 0);
+
+      await transport.dispose();
     });
   });
 
@@ -97,6 +180,9 @@ void main() {
       final transport = LanTransport(
         roomCodeProvider: () => 'בדיקה',
         onLog: logs.add,
+        // נפילה של סוקט שהחזיק מעמד — הענף שבו קמים מיד. בשטח זה המצב
+        // הרגיל: הסוקט חי שעות, והרשת מתנתקת לרגע.
+        rebindMinUptime: Duration.zero,
       )..onRebound = () => rebounds++;
 
       expect(await transport.start(), isTrue);
@@ -118,6 +204,35 @@ void main() {
       expect(rebounds, 1, reason: 'ההתאוששות מודיעה נוכחות מיד');
       expect(logs.any((line) => line.contains('נפל')), isTrue);
       expect(logs.any((line) => line.contains('חזר')), isTrue);
+
+      await transport.dispose();
+    });
+
+    test('סוקט שמת מיד אחרי שקם אינו נכנס ללופ קימה', () async {
+      // זה מה שנצפה בשטח על מחשב בלי מסלול ברירת מחדל: השידור הורג את
+      // הסוקט, הקימה מפעילה onRebound שמשדר נוכחות, והשידור הורג שוב —
+      // עשרות נפילות בשנייה. הרף חוסם את זה, ושומר הסף ינסה בהמשך.
+      final logs = <String>[];
+      var rebounds = 0;
+      final transport = LanTransport(
+        roomCodeProvider: () => 'בדיקה',
+        onLog: logs.add,
+        rebindMinUptime: const Duration(minutes: 1),
+      )..onRebound = () => rebounds++;
+
+      expect(await transport.start(), isTrue);
+      transport.reportSocketFailure(
+        const SocketException('network unreachable'),
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(transport.isBound, isFalse, reason: 'אין קימה מיידית');
+      expect(rebounds, 0);
+      expect(
+        logs.any((line) => line.contains('מיד אחרי שקם')),
+        isTrue,
+        reason: 'היומן אומר שההמתנה מכוונת ולא תקלה',
+      );
 
       await transport.dispose();
     });

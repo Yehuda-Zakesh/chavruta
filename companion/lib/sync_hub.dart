@@ -311,6 +311,15 @@ class SyncHub {
       'lanError': transport.lastError,
       'firewallRule': firewallRule,
       'clockSkewMinutes': transport.clockSkewMinutes,
+      // האבחון: מה בכלל מגיע לסוקט, ודרך אילו כרטיסים אנחנו משדרים.
+      // ראו את התיעוד ב-`LanTransport.datagramsReceived`.
+      'datagramsReceived': transport.datagramsReceived,
+      'datagramsFromOthers': transport.datagramsFromOthers,
+      'datagramsRejected': transport.datagramsRejected,
+      'lastRemoteSource': transport.lastRemoteSource,
+      'links': transport.routes
+          .map((r) => {'local': r.local, 'broadcast': r.broadcast})
+          .toList(),
       'remoteSequence': _remoteSequence,
       'remote': _remote?.toJson(),
       'localLocation': _localLocation?.toJson(),
