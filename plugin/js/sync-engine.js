@@ -7,9 +7,15 @@
  * - יוצא: כל שינוי מקום קריאה מדווח ל-`/publish`.
  * - נכנס: המתנה ארוכה על `/events`, וכל עדכון מהחברותא הופך לניווט.
  *
- * **מופע אחד בלבד מריץ את המנוע** — מופע הרקע כשההרשאה לריצת רקע ניתנה,
- * ואחרת לשונית התוסף. שני מופעים שירוצו יחד היו מנווטים פעמיים ומדווחים
- * פעמיים על אותו מקום.
+ * **מופע אחד בלבד מריץ את המנוע**, ושני מופעים יחד היו מנווטים פעמיים
+ * ומדווחים פעמיים על אותו מקום. **המתאם הוא שמכריע מי זה**, ולא התוסף:
+ * שני המופעים מתחילים לרוץ, כל אחד שולח את המזהה שלו, ומי שאינו המחזיק
+ * מקבל `engineMine: false` ומחכה בלי לגעת בכלום.
+ *
+ * זה בא במקום חלוקה שנגזרה כאן מרשימת ההרשאות, והייתה נחישה: הלשונית
+ * ויתרה על המנוע ברגע ש-`app.run_on_startup` אושרה, בלי שום דרך לדעת אם
+ * מופע הרקע באמת חי. כשהוא לא היה חי — הרשאת keep-alive שלא אושרה,
+ * ואוצריא סוגרת את המופע אחרי כשלוש דקות — הסנכרון נעצר בשקט מוחלט.
  */
 const SyncEngine = (function () {
   /** גלילה מהירה מייצרת שינויי מקום רבים; מדווחים רק על מה שנשאר. */
@@ -18,14 +24,26 @@ const SyncEngine = (function () {
   const RETRY_MIN_MS = 3000;
   const RETRY_MAX_MS = 30000;
 
+  /**
+   * כמה להמתין בין ניסיונות כשמופע אחר מחזיק את המנוע.
+   *
+   * זו אינה שגיאה אלא המצב הרגיל בלשונית פתוחה, ולכן ההמתנה קבועה ואינה
+   * גדלה. היא צריכה להיות קצרה מההחזקה בצד המתאם (45 שניות), כדי שמופע
+   * רקע שנסגר יוחלף מהר.
+   */
+  const NOT_OWNER_RETRY_MS = 10000;
+
   let running = false;
   let since = -1;
   let retryDelay = RETRY_MIN_MS;
   let publishTimer = null;
   let lastSentKey = null;
   let listener = null;
-  let status = { connected: false, error: null, state: null };
+  let status = { connected: false, error: null, state: null, owner: false };
   let onStatusChange = function () {};
+
+  /** האם המתאם מסר לנו את ההחזקה על המנוע. ראו את התיעוד בראש הקובץ. */
+  let owner = false;
 
   /**
    * מזהה הלולאה הפעילה. `stop()` ואחריו `start()` משאירים את הלולאה
@@ -96,6 +114,9 @@ const SyncEngine = (function () {
 
   async function publish(location) {
     if (!location) return;
+    // מופע שאינו המחזיק אינו מדווח: שני מופעים שידווחו יגרמו לשידור כפול,
+    // ואם הלשונית תדווח בזמן שהרקע מנווט — גם למיקום שאינו הנוכחי.
+    if (!owner) return;
     const key = keyOf(location);
     if (key === lastSentKey) return;
     try {
@@ -104,7 +125,7 @@ const SyncEngine = (function () {
     } catch (e) {
       // המתאם אינו זמין כרגע. אין טעם לתור המתנה: המקום הנוכחי יידווח
       // שוב בשינוי הבא, וגם `/events` תגלה שהמתאם חזר.
-      setStatus({ connected: false, error: e.message, state: null });
+      setStatus({ connected: false, error: e.message, state: null, owner: owner });
     }
   }
 
@@ -134,6 +155,42 @@ const SyncEngine = (function () {
       publishTimer = null;
       publish(location);
     }, PUBLISH_DEBOUNCE_MS);
+  }
+
+  function attachListener() {
+    if (listener) return;
+    listener = function (payload) {
+      queuePublish(payload);
+    };
+    Otzaria.on('reader.current_ref_changed', listener);
+  }
+
+  function detachListener() {
+    if (publishTimer) {
+      clearTimeout(publishTimer);
+      publishTimer = null;
+    }
+    if (!listener) return;
+    Otzaria.off('reader.current_ref_changed', listener);
+    listener = null;
+  }
+
+  /**
+   * מעדכן אם ההחזקה על המנוע בידינו, ומחבר או מנתק את המעקב בהתאם.
+   *
+   * המאזין מחובר רק כשההחזקה בידינו: מופע שאינו המחזיק אינו צריך לשמוע
+   * על שינויי מקום כלל, ומופע שקיבל את ההחזקה חייב לדווח את המקום הנוכחי
+   * מיד — אחרת המתאם אינו יודע איפה אנחנו עד מעבר הדף הבא.
+   */
+  async function setOwner(next) {
+    if (next === owner) return;
+    owner = next;
+    if (owner) {
+      attachListener();
+      await republishCurrent();
+    } else {
+      detachListener();
+    }
   }
 
   /** מבצע ניווט בעקבות עדכון שהגיע מהחברותא. */
@@ -184,7 +241,20 @@ const SyncEngine = (function () {
         if (!current(token)) return;
         retryDelay = RETRY_MIN_MS;
         if (typeof state.remoteSequence === 'number') since = state.remoteSequence;
-        setStatus({ connected: true, error: null, state: state });
+
+        // מתאם מגרסה שאינה מכירה את ההחזקה אינו מחזיר `engineMine`. אז
+        // מתייחסים אליו כמי שמסר לנו אותה, כלומר בדיוק ההתנהגות הקודמת.
+        const mine = state.engineMine !== false;
+        await setOwner(mine);
+        if (!current(token)) return;
+        setStatus({ connected: true, error: null, state: state, owner: mine });
+
+        if (!mine) {
+          // מופע אחר מסנכרן. לא מדווחים, לא מנווטים, ולא מחזיקים בקשה
+          // פתוחה — רק חוזרים לבדוק, כדי לקחת את המנוע אם הוא ייסגר.
+          await sleep(NOT_OWNER_RETRY_MS);
+          continue;
+        }
 
         // מתאם שרק עכשיו נמצא — בעלייה, או אחרי שקם מחדש — אינו יודע
         // איפה אנחנו. מדווחים לפני הטיפול בעדכון, כדי שהמצב שלו יהיה
@@ -199,7 +269,7 @@ const SyncEngine = (function () {
       } catch (e) {
         connected = false;
         if (!current(token)) return;
-        setStatus({ connected: false, error: e.message, state: null });
+        setStatus({ connected: false, error: e.message, state: null, owner: owner });
         await sleep(retryDelay);
         retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
       }
@@ -220,23 +290,33 @@ const SyncEngine = (function () {
       onStatusChange = callback || function () {};
     },
 
-    start: function () {
+    /** האם ההחזקה על המנוע בידי המופע הזה. */
+    get owner() {
+      return owner;
+    },
+
+    /**
+     * מפעיל את המנוע עבור המופע [instanceId] (`'background'` או
+     * `'foreground:<מזהה>'`).
+     *
+     * שני המופעים קוראים לזה, וזה בכוונה: המתאם הוא שמכריע מי מהם
+     * מסנכרן בפועל, וכך מופע רקע שנסגר מוחלף מעצמו.
+     */
+    start: function (instanceId) {
       if (running) return;
       running = true;
       since = -1;
       // המצב מאופס גם אם המנוע כבר רץ פעם: מתאם אחר, או אותו מתאם
       // אחרי הפעלה מחדש, אינו יודע דבר על מה שדיווחנו בעבר.
       connected = false;
+      owner = false;
       lastSentKey = null;
       missingBook = null;
+      Companion.setInstance(instanceId || '');
 
-      listener = function (payload) {
-        queuePublish(payload);
-      };
-      Otzaria.on('reader.current_ref_changed', listener);
-
-      // הדיווח הראשוני אינו כאן אלא בלולאה, ברגע שהמתאם עונה: בעלייה
-      // הוא לא תמיד כבר רץ, ודיווח שנכשל כאן לא היה חוזר לעולם.
+      // המאזין מחובר רק כשהמתאם ימסור לנו את ההחזקה (ראו [setOwner]), וגם
+      // הדיווח הראשוני נעשה שם: בעלייה המתאם לא תמיד כבר רץ, ודיווח
+      // שנכשל כאן לא היה חוזר לעולם.
       loopToken++;
       loop(loopToken);
     },
@@ -244,13 +324,17 @@ const SyncEngine = (function () {
     stop: function () {
       running = false;
       connected = false;
-      if (listener) {
-        Otzaria.off('reader.current_ref_changed', listener);
-        listener = null;
-      }
-      if (publishTimer) {
-        clearTimeout(publishTimer);
-        publishTimer = null;
+      detachListener();
+      // משחררים את ההחזקה כדי שהמופע האחר ייכנס מיד ולא ימתין עד שהיא
+      // תפוג. כשל כאן אינו מעניין — היא פגה לבדה.
+      if (owner) {
+        owner = false;
+        try {
+          const call = Companion.releaseEngine();
+          if (call && typeof call.catch === 'function') call.catch(function () {});
+        } catch (e) {
+          // אין מתאם, או שהוא נסגר. ההחזקה תפוג בצד שלו ממילא.
+        }
       }
     },
   };

@@ -6,6 +6,19 @@ import 'protocol.dart';
 /// כתובת ה-broadcast של רשת link-local (169.254.x.x).
 const String linkLocalBroadcast = '169.254.255.255';
 
+/// broadcast מוגבל: היעד היחיד שנקלט אצל היעד **בלי תלות ברשת שלו**.
+///
+/// broadcast מכוון-רשת (`169.254.255.255`, `192.168.1.255`) נקלט רק אצל מי
+/// שיש לו כתובת באותה רשת. חברותא שהכרטיס שלה לא קיבל כתובת, או קיבל כתובת
+/// מרשת אחרת, מקבלת את הדטגרמה פיזית וזורקת אותה בשכבת ה-IP — ואז הקישור
+/// חד-כיווני: אנחנו שומעים אותה והיא אינה שומעת אותנו.
+///
+/// זה נשלח **מהסוקט שקשור לכתובת הכרטיס**, ולכן אינו תלוי במסלול ברירת
+/// המחדל, וזו הסיבה שהסכנה שתועדה ב-[LanTransport.broadcastRoutesFor] אינה
+/// חלה כאן: היא הייתה של שליחה מסוקט כללי. כשל בשליחה אליו אינו מפיל את
+/// הסוקט של הכרטיס; ראו [LanTransport.send].
+const String globalBroadcast = '255.255.255.255';
+
 /// כל כמה זמן נבדק שהסוקט חי, ואם לא — מנסים לבנות אותו מחדש.
 ///
 /// ראו [LanTransport.reportSocketFailure] להסבר למה סוקט UDP ב-Windows
@@ -147,6 +160,18 @@ class LanTransport {
   /// דרכו מיד; רק הדיווח ליומן נעשה פעם אחת.
   final Set<String> _senderFailures = {};
 
+  /// כתובות שהשידור אל [globalBroadcast] דרכן נכשל, ושכבר דווחו ליומן.
+  /// ראו [_sendGlobal] — כשל כזה אינו מונע את השידור המכוון.
+  final Set<String> _globalSendFailures = {};
+
+  /// כתובות שפעם אחת כן נפתח עליהן סוקט שידור.
+  ///
+  /// כרטיס שנמנה אך מעולם לא נקשר הוא כמעט תמיד Wi-Fi Direct או Bluetooth
+  /// PAN שאין בצדו אף אחד. הוא נשאר ברשימת הניסיונות בכוונה (ברגע שיתחבר
+  /// השידור יעבור דרכו מיד), אבל מוצג לתוסף כמי שאינו משדר — אחרת שורת
+  /// הקישורים, שכל תפקידה להשוות שני מחשבים, מציגה שלושה כרטיסים מתים.
+  final Set<String> _senderEverBound = {};
+
   /// מסלולי השידור שנמנו לאחרונה, ובן כמה הם. ראו [targetsCacheTtl].
   List<BroadcastRoute>? _cachedRoutes;
   final Stopwatch _targetsAge = Stopwatch();
@@ -186,6 +211,10 @@ class LanTransport {
   /// מסלולי השידור הנוכחיים, לתצוגה בתוסף. השוואת השורה הזאת בין שני
   /// מחשבים היא הדרך המהירה לראות אם הם באמת על אותו קישור.
   List<BroadcastRoute> get routes => _lastRoutes;
+
+  /// האם דרך [local] אי פעם יצא שידור. ראו [_senderEverBound] — כרטיס
+  /// שנמנה אך אינו משדר הוא רעש בשורת הקישורים, לא קישור.
+  bool isSending(String local) => _senderEverBound.contains(local);
 
   Future<bool> start() async {
     _watchdog ??= Timer.periodic(
@@ -322,7 +351,11 @@ class LanTransport {
       if (remote) _rejected++;
       return;
     }
-    _clockSkewMinutes = null;
+    // **רק הודעה ממחשב אחר מנקה את אזהרת השעונים.** הדטגרמה שלנו חוזרת
+    // אלינו מה-broadcast, והיא תמיד טרייה — היא נחתמה בשעון הזה עצמו.
+    // ניקוי בעקבותיה היה מוחק את האזהרה כל 20 שניות, וכך פער שעונים
+    // שמפיל את *כל* הודעות החברותא נראה בתוסף כאילו אינו קיים.
+    if (remote) _clockSkewMinutes = null;
     _inbound.add(message);
   }
 
@@ -374,6 +407,9 @@ class LanTransport {
         );
         _dropSender(route.local);
       }
+      // ואותה הודעה גם אל ה-broadcast המוגבל, מאותו כרטיס. ראו
+      // [globalBroadcast]: זה מה שמגיע לחברותא שאינה באותה רשת.
+      delivered += _sendGlobal(route.local, sender, bytes);
     }
 
     if (delivered > 0) {
@@ -408,6 +444,7 @@ class LanTransport {
       );
       _senders[local] = socket;
       _senderFailures.remove(local);
+      _senderEverBound.add(local);
       return socket;
     } on SocketException catch (e) {
       // פעם אחת לכל כתובת, עד שרשימת המסלולים תשתנה. ראו [_senderFailures].
@@ -417,6 +454,31 @@ class LanTransport {
         );
       }
       return null;
+    }
+  }
+
+  /// משדר אל [globalBroadcast] דרך הכרטיס [local]. מחזיר כמה בייטים יצאו.
+  ///
+  /// **כשל כאן אינו מפיל את הסוקט של הכרטיס.** ה-broadcast המכוון הוא
+  /// היעד שאפשר לסמוך עליו, וזה תוספת כיסוי; כרטיס שמערכת ההפעלה מסרבת
+  /// לשלוח דרכו אל `255.255.255.255` צריך להמשיך לשדר אל הרשת שלו כרגיל.
+  int _sendGlobal(String local, RawDatagramSocket sender, List<int> bytes) {
+    // השליחה המכוונת שקדמה לזה עלולה הייתה לזרוק את הסוקט. סוקט סגור
+    // אינו זורק אלא מחזיר 0, וזה היה נספר כשידור שלא יצא.
+    if (!identical(_senders[local], sender)) return 0;
+    try {
+      final sent = sender.send(bytes, InternetAddress(globalBroadcast), port);
+      if (sent > 0) _globalSendFailures.remove(local);
+      return sent;
+    } on SocketException catch (e) {
+      // פעם אחת לכל כתובת, כמו [_senderFailures]: זה משודר כל 20 שניות.
+      if (_globalSendFailures.add(local)) {
+        onLog?.call(
+          'אין שידור אל $globalBroadcast דרך $local (${e.message}) — '
+          'ממשיך לשדר אל ה-broadcast של הרשת',
+        );
+      }
+      return 0;
     }
   }
 
@@ -432,10 +494,11 @@ class LanTransport {
     _lastRoutes = routes;
     // הרשת השתנתה, ולכן כרטיס שנכשל קודם ראוי לדיווח מחודש אם ייכשל שוב.
     _senderFailures.clear();
+    _globalSendFailures.clear();
     onLog?.call(
       routes.isEmpty
           ? 'אין כרטיס רשת פעיל — אין למי לשדר'
-          : 'משדר אל ${routes.map((r) => "${r.broadcast} (מ-${r.local})").join(", ")}',
+          : 'משדר אל ${routes.map((r) => "${r.broadcast} + $globalBroadcast (מ-${r.local})").join(", ")}',
     );
   }
 

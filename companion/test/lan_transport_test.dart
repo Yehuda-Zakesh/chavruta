@@ -55,10 +55,13 @@ void main() {
       ]);
     });
 
-    test('255.255.255.255 אינו ביעדים לעולם', () {
-      // הכתובת הגלובלית יוצאת רק דרך מסלול ברירת המחדל — כלומר דרך
-      // הכרטיס שה-broadcast המכוון שלו כבר ברשימה — ועל מחשב בלי מסלול
-      // כזה השליחה אליה מפילה את הסוקט בלופ אינסופי.
+    test('255.255.255.255 אינו מסלול בפני עצמו', () {
+      // הכתובת הגלובלית **כן** משודרת — ראו [globalBroadcast] ואת `send`,
+      // שמוציא אותה מהסוקט הקשור לכל כרטיס. מה שהיא אינה הוא *מסלול*:
+      // מסלול פירושו כרטיס, ולא יעד. אילו הייתה נכנסת לכאן כשורה משלה,
+      // היה נפתח עבורה סוקט שאינו קשור לאף כרטיס — וזה בדיוק המסלול
+      // שדרכו מחשב בלי מסלול ברירת מחדל היה מקבל "אין מסלול" ומאבד את
+      // הסוקט בלופ.
       for (final addresses in [
         ['192.168.1.7'],
         ['169.254.10.2'],
@@ -130,7 +133,8 @@ void main() {
     });
 
     test('בלי כרטיס רשת אין מסלולים בכלל', () {
-      // ולא שידור אל 255.255.255.255, שהיה מפיל את הסוקט על מחשב מנותק.
+      // אין כרטיס — אין סוקט לשדר ממנו, וגם לא אל 255.255.255.255. זה מה
+      // שמונע את השליחה שהפילה את הסוקט על מחשב מנותק.
       expect(LanTransport.broadcastRoutesFor(const []), isEmpty);
       expect(LanTransport.broadcastRoutesFor(['לא כתובת']), isEmpty);
     });
@@ -185,6 +189,51 @@ void main() {
       expect(transport.datagramsRejected, 0);
 
       await transport.dispose();
+    });
+  });
+
+  group('אזהרת פער שעונים', () {
+    /// שולח הודעה חתומה אל [transport] דרך ה-loopback, כלומר כמי שאינו
+    /// "מחשב אחר" — בדיוק כמו הדטגרמה שלנו שחוזרת מה-broadcast.
+    Future<void> sendLocal(LanTransport transport, {required int ageMs}) async {
+      final prodder = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      addTearDown(prodder.close);
+      prodder.send(
+        SyncMessage(
+          type: SyncMessageType.presence,
+          roomHash: SyncMessage.hashRoomCode('בדיקה'),
+          senderId: 'self000000000000',
+          senderName: 'עצמי',
+          timestampMs: DateTime.now().millisecondsSinceEpoch - ageMs,
+          sequence: 1,
+        ).encode('בדיקה'),
+        InternetAddress.loopbackIPv4,
+        transport.boundPort!,
+      );
+    }
+
+    test('דטגרמה מהמחשב הזה אינה מוחקת את האזהרה', () async {
+      // **זה הבאג שהאזהרה נעלמה בו.** ההודעה שלנו חוזרת אלינו מה-broadcast
+      // כל 20 שניות, והיא תמיד טרייה — היא נחתמה בשעון הזה עצמו. ניקוי
+      // בעקבותיה מחק את האזהרה מיד, וכך פער שעונים שמפיל את *כל* הודעות
+      // החברותא הופיע ביומן פעם אחת ומעולם לא הגיע לתוסף.
+      final transport = LanTransport(roomCodeProvider: () => 'בדיקה', port: 0);
+      expect(await transport.start(), isTrue);
+      addTearDown(transport.dispose);
+
+      await sendLocal(transport, ageMs: freshnessWindow.inMilliseconds * 5);
+      await _waitFor(() => transport.clockSkewMinutes != null);
+      final skew = transport.clockSkewMinutes;
+
+      final receivedBefore = transport.datagramsReceived;
+      await sendLocal(transport, ageMs: 0);
+      await _waitFor(() => transport.datagramsReceived > receivedBefore);
+
+      expect(
+        transport.clockSkewMinutes,
+        skew,
+        reason: 'רק הודעה ממחשב אחר מוכיחה שהשעונים כן מסתדרים',
+      );
     });
   });
 

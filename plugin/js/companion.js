@@ -23,6 +23,15 @@ const Companion = (function () {
   let port = null;
 
   /**
+   * מזהה המופע הזה של התוסף, כפי שהמתאם מכיר אותו.
+   *
+   * המתאם הוא שמכריע מי משני מופעי התוסף (לשונית ורקע) מריץ את הסנכרון,
+   * ולכן כל פנייה שהיא סימן חיים של המנוע נושאת את המזהה. `''` = מופע
+   * שאינו מנוע, ואז המתאם אינו נוגע בהחזקה בכלל.
+   */
+  let instance = '';
+
+  /**
    * מסווג כשל של קריאת רשת, כדי שהמסך יוכל להסביר אותו נכון.
    *
    * `network` הוא הכשל היחיד שמשמעותו "אין מתאם על הפורט הזה"; כל השאר
@@ -183,6 +192,17 @@ const Companion = (function () {
 
     discover: discover,
 
+    /**
+     * קובע את מזהה המופע שייצורף לכל פנייה של המנוע. ראו [instance].
+     */
+    setInstance: function (value) {
+      instance = typeof value === 'string' ? value : '';
+    },
+
+    get instance() {
+      return instance;
+    },
+
     /** מצב המתאם עכשיו: זיווג, מחוברים, מיקום מרוחק אחרון. */
     hello: function () {
       return withCompanion(function () {
@@ -193,19 +213,43 @@ const Companion = (function () {
     /**
      * המתנה ארוכה לעדכון מהחברותא. חוזרת מיד אם יש עדכון חדש מ-[since],
      * ואחרת נשארת פתוחה עד שמשהו קורה או עד שיפוג הזמן בצד המתאם.
+     *
+     * התשובה נושאת `engineMine`: שקר פירושו שמופע אחר של התוסף הוא
+     * שמסנכרן עכשיו, ואז אין כאן עדכון לנווט אליו.
      */
     events: function (since) {
       return withCompanion(function () {
-        return request('/events?since=' + encodeURIComponent(since), {
-          timeoutMs: EVENTS_TIMEOUT_MS,
-        });
+        return request(
+          '/events?since=' +
+            encodeURIComponent(since) +
+            '&instance=' +
+            encodeURIComponent(instance),
+          { timeoutMs: EVENTS_TIMEOUT_MS }
+        );
       });
     },
 
     /** דיווח על מקום הלימוד המקומי. */
     publish: function (location) {
       return withCompanion(function () {
-        return request('/publish', { method: 'POST', body: location });
+        return request('/publish', {
+          method: 'POST',
+          body: Object.assign({ instance: instance }, location),
+        });
+      });
+    },
+
+    /**
+     * מודיע למתאם שהמופע הזה מפסיק לסנכרן, כדי שהמופע האחר ייכנס מיד
+     * ולא ימתין עד שההחזקה תפוג. כשל כאן אינו מעניין: ההחזקה פגה לבדה.
+     */
+    releaseEngine: function () {
+      if (instance === '') return Promise.resolve(null);
+      return withCompanion(function () {
+        return request('/engine/release', {
+          method: 'POST',
+          body: { instance: instance },
+        });
       });
     },
 

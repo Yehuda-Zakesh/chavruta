@@ -112,6 +112,8 @@ class LocalApi {
           await _handleRoom(request);
         case 'POST /name':
           await _handleName(request);
+        case 'POST /engine/release':
+          await _handleEngineRelease(request);
         case 'GET /startup':
           await _respondJson(request, (await startup.read()).toJson());
         case 'POST /startup':
@@ -145,8 +147,44 @@ class LocalApi {
   /// ממתינה עד שמשהו קורה או עד שיפוג הזמן.
   Future<void> _handleEvents(HttpRequest request) async {
     final since = int.tryParse(request.uri.queryParameters['since'] ?? '') ?? -1;
-    if (hub.remoteSequence <= since) {
+    final instance = request.uri.queryParameters['instance'] ?? '';
+
+    // ההכרעה מי מסנכרן נעשית כאן, לפני ההמתנה. מופע שאינו המחזיק חוזר
+    // מיד ובלי `hasUpdate` — הוא אינו אמור לנווט, ואין טעם להחזיק אצלו
+    // בקשה פתוחה ל-25 שניות. הוא ינסה שוב, ואם המחזיק יידום ייכנס במקומו.
+    //
+    // בקשה בלי `instance` אינה נכנסת להחזקה כלל, וממתינה בדיוק כמו קודם.
+    final claimsEngine = instance.isNotEmpty;
+    final heldBefore = !claimsEngine || hub.engineOwner == instance;
+    if (!hub.claimEngine(instance)) {
+      await _respondJson(request, {
+        'hasUpdate': false,
+        'engineMine': false,
+        ...hub.snapshot(),
+      });
+      return;
+    }
+
+    // **מופע שרק עכשיו קיבל את ההחזקה מקבל תשובה מיד.** בלי זה הוא היה
+    // לומד שהמנוע בידיו רק בתום ההמתנה הארוכה — עד 25 שניות שבהן הוא
+    // מחזיק את ההחזקה אך אינו מאזין לשינויי מקום ואינו מדווח כלום. זה
+    // בדיוק הרגע הרגיש: מיד אחרי שמופע הרקע נדם והלשונית נכנסה במקומו.
+    if (heldBefore && hub.remoteSequence <= since) {
       await hub.waitForChange(longPollTimeout);
+      // **חובה לבדוק את ההחזקה שוב, ולכבד את התוצאה.** ההמתנה כאן ארוכה
+      // (25 שניות), ובתוכה מופע הרקע יכול לעלות ולקחת את המנוע. תשובה
+      // שאומרת לממתין "ההחזקה שלך" בכל מקרה הייתה משאירה שני מופעים
+      // שמדווחים מיקום ומנווטים במקביל — בדיוק מה שההחזקה באה למנוע.
+      //
+      // חידוש ולא רכישה — ראו [SyncHub.refreshEngine].
+      if (!hub.refreshEngine(instance)) {
+        await _respondJson(request, {
+          'hasUpdate': false,
+          'engineMine': false,
+          ...hub.snapshot(),
+        });
+        return;
+      }
     }
 
     final snapshot = hub.snapshot();
@@ -165,7 +203,11 @@ class LocalApi {
     // ממנו — אחרי הניווט — יזוהה ולא ישודר בחזרה לחברותא.
     if (hasUpdate) hub.markHandedToPlugin(location);
 
-    await _respondJson(request, {'hasUpdate': hasUpdate, ...snapshot});
+    await _respondJson(request, {
+      'hasUpdate': hasUpdate,
+      'engineMine': true,
+      ...snapshot,
+    });
   }
 
   Future<void> _handlePublish(HttpRequest request) async {
@@ -177,8 +219,27 @@ class LocalApi {
       }, status: HttpStatus.badRequest);
       return;
     }
+    // דיווח מיקום הוא סימן חיים של המנוע ממש כמו `/events`, ולכן הוא
+    // מחדש את ההחזקה. `instance` אופציונלי — בלעדיו הדיווח נקלט כרגיל,
+    // וכך `curl` ובדיקות ידניות ממשיכים לעבוד.
+    final instance = body is Map ? body['instance'] : null;
+    if (instance is String && instance.isNotEmpty) hub.claimEngine(instance);
     final broadcast = await hub.publishLocal(location);
     await _respondJson(request, {'broadcast': broadcast, ...hub.snapshot()});
+  }
+
+  /// מופע התוסף מודיע שהוא מפסיק לסנכרן, כדי שהמופע האחר ייכנס מיד.
+  Future<void> _handleEngineRelease(HttpRequest request) async {
+    final body = await _readJsonBody(request);
+    final instance = body is Map ? body['instance'] : null;
+    if (instance is! String || instance.isEmpty) {
+      await _respondJson(request, {
+        'error': 'instance is required',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
+    hub.releaseEngine(instance);
+    await _respondJson(request, hub.snapshot());
   }
 
   /// כניסה לחברותא או יציאה ממנה.

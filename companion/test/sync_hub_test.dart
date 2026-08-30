@@ -357,4 +357,79 @@ void main() {
     now = now.add(peerTimeout + const Duration(seconds: 1));
     expect(hub.snapshot()['peers'], isEmpty);
   });
+
+  group('ההחזקה על מנוע הסנכרון', () {
+    test('המופע הראשון מקבל אותה, והשני נדחה', () {
+      expect(hub.claimEngine('foreground:a'), isTrue);
+      expect(hub.claimEngine('foreground:b'), isFalse);
+      // וההחזקה מתחדשת בכל פנייה של המחזיק, בלי פעימה נפרדת.
+      expect(hub.claimEngine('foreground:a'), isTrue);
+    });
+
+    test('רקע גובר על לשונית גם כשהלשונית הגיעה ראשונה', () {
+      // הלשונית מוקפאת ברגע שהמשתמש עובר לספר, ואילו מופע הרקע חי כל זמן
+      // שאוצריא פתוחה. לכן הוא המחזיק הנכון ברגע שהוא מבקש.
+      expect(hub.claimEngine('foreground:a'), isTrue);
+      expect(hub.claimEngine('background:x'), isTrue);
+      expect(hub.claimEngine('foreground:a'), isFalse);
+    });
+
+    test('לשונית אינה חוטפת מרקע חי', () {
+      expect(hub.claimEngine('background:x'), isTrue);
+      expect(hub.claimEngine('foreground:a'), isFalse);
+      expect(hub.engineStatus()['owner'], 'background:x');
+    });
+
+    test('החזקה שנדמה עוברת למופע הבא שמבקש', () {
+      // **זה מה שמציל את המצב שהיה כאן.** מופע רקע שאוצריא סגרה — הרשאת
+      // keep-alive שלא אושרה — מפסיק לפנות, וההחזקה שלו פוגה. בלי זה
+      // הלשונית הייתה ממתינה לו לנצח, ואף אחד לא היה מסנכרן.
+      expect(hub.claimEngine('background:x'), isTrue);
+      expect(hub.claimEngine('foreground:a'), isFalse);
+
+      now = now.add(engineLeaseTimeout + const Duration(seconds: 1));
+      expect(hub.claimEngine('foreground:a'), isTrue);
+      expect(hub.engineStatus()['owner'], 'foreground:a');
+    });
+
+    test('שחרור מסודר מפנה מיד ומעיר את הממתינים', () async {
+      expect(hub.claimEngine('background:x'), isTrue);
+
+      var woke = false;
+      final waiting = hub.waitForChange(const Duration(minutes: 1))
+        ..then((_) => woke = true);
+
+      hub.releaseEngine('background:x');
+      await waiting;
+
+      expect(woke, isTrue);
+      expect(hub.engineStatus()['owner'], isNull);
+      expect(hub.claimEngine('foreground:a'), isTrue);
+    });
+
+    test('שחרור בידי מי שאינו המחזיק אינו עושה כלום', () {
+      expect(hub.claimEngine('background:x'), isTrue);
+      hub.releaseEngine('foreground:a');
+      expect(hub.engineStatus()['owner'], 'background:x');
+    });
+
+    test('מזהה ריק אינו נועל את ההחזקה', () {
+      // `curl` ובדיקות ידניות פונים בלי `instance`, ואסור שפנייה כזאת
+      // תיקח את ההחזקה מהמנוע האמיתי או תיחסם על ידו.
+      expect(hub.claimEngine('background:x'), isTrue);
+      expect(hub.claimEngine(''), isTrue);
+      expect(hub.engineStatus()['owner'], 'background:x');
+    });
+
+    test('בלי מנוע כלל ה-snapshot אומר זאת במפורש', () {
+      // זה השדה שהיה חסר: "אף אחד אינו מסנכרן" נראה מבחוץ בדיוק כמו
+      // תקלת רשת, ולא הייתה שום דרך להבדיל.
+      expect((hub.snapshot()['engine'] as Map)['owner'], isNull);
+
+      expect(hub.claimEngine('background:x'), isTrue);
+      final engine = hub.snapshot()['engine'] as Map;
+      expect(engine['owner'], 'background:x');
+      expect(engine['ageMs'], 0);
+    });
+  });
 }

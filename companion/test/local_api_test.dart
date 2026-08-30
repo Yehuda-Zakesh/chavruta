@@ -322,6 +322,136 @@ void main() {
       expect(response.json['hasUpdate'], isTrue);
       expect(response.json['remoteSequence'], 1);
     }, timeout: const Timeout(Duration(seconds: 10)));
+
+    test('מופע שאינו מחזיק המנוע חוזר מיד, ובלי עדכון', () async {
+      // חשוב שיחזור *מיד*: אחרת שני מופעי התוסף היו מחזיקים שתי בקשות
+      // פתוחות, והמופע הלא-נכון היה מקבל את העדכון ומנווט.
+      await transport.deliver(
+        SyncMessage(
+          type: SyncMessageType.location,
+          roomHash: SyncMessage.hashRoomCode('חדר'),
+          senderId: '11223344',
+          senderName: 'החברותא',
+          timestampMs: DateTime.now().millisecondsSinceEpoch,
+          sequence: 1,
+          location: const SyncLocation(bookId: 'ברכות', index: 12),
+        ),
+      );
+
+      final owner = await client.request(
+        'GET',
+        '/events?since=-1&instance=background:x',
+      );
+      expect(owner.json['engineMine'], isTrue);
+      expect(owner.json['hasUpdate'], isTrue);
+
+      final other = await client
+          .request('GET', '/events?since=-1&instance=foreground:a')
+          .timeout(const Duration(seconds: 5));
+      expect(other.json['engineMine'], isFalse);
+      expect(other.json['hasUpdate'], isFalse);
+      expect((other.json['engine'] as Map)['owner'], 'background:x');
+    }, timeout: const Timeout(Duration(seconds: 10)));
+
+    test('החזקה שנחטפה באמצע ההמתנה מוחזרת כ-engineMine: false', () async {
+      // ההמתנה כאן היא 25 שניות, ובתוכה מופע הרקע עולה ולוקח את המנוע.
+      // תשובה שאומרת לממתין "ההחזקה שלך" בכל מקרה הייתה משאירה שני מופעים
+      // שמדווחים ומנווטים במקביל — וזה בדיוק מה שההחזקה באה למנוע.
+      await client.request('GET', '/events?since=-1&instance=foreground:a');
+      final pending = client.request(
+        'GET',
+        '/events?since=0&instance=foreground:a',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(hub.claimEngine('background:x'), isTrue);
+
+      // וגם נענה מיד ולא בתום 25 השניות: חטיפת ההחזקה מעירה את הממתין.
+      final response = await pending.timeout(const Duration(seconds: 5));
+      expect(response.json['engineMine'], isFalse);
+      expect(response.json['hasUpdate'], isFalse);
+    }, timeout: const Timeout(Duration(seconds: 15)));
+
+    test('שחרור אינו מתבטל מהבקשה התלויה של המשחרר עצמו', () async {
+      // מופע שנסגר משחרר את ההחזקה, אבל ההמתנה הארוכה שלו עדיין תלויה —
+      // והשחרור עצמו מעיר אותה. בקשה שהייתה *רוכשת* את ההחזקה מחדש בסופה
+      // הייתה מחזירה אותה למופע שכבר אינו קיים, ואז אף אחד לא מסנכרן.
+      await client.request('GET', '/events?since=-1&instance=background:x');
+      final pending = client.request(
+        'GET',
+        '/events?since=0&instance=background:x',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      await client.request(
+        'POST',
+        '/engine/release',
+        body: {'instance': 'background:x'},
+      );
+      final response = await pending.timeout(const Duration(seconds: 5));
+      expect(response.json['engineMine'], isFalse);
+
+      final hello = await client.request('GET', '/hello');
+      expect((hello.json['engine'] as Map)['owner'], isNull);
+    }, timeout: const Timeout(Duration(seconds: 15)));
+
+    test('מופע שרק קיבל את ההחזקה נענה מיד', () async {
+      // `since=0` והמונה על 0 — בקשה שבמצב רגיל ממתינה 25 שניות. מופע שרק
+      // עכשיו קיבל את ההחזקה חייב לדעת זאת מיד, אחרת הוא מחזיק את המנוע
+      // ובכל זאת אינו מאזין לשינויי מקום ואינו מדווח כלום.
+      await client.request('GET', '/events?since=-1&instance=background:x');
+      await client.request(
+        'POST',
+        '/engine/release',
+        body: {'instance': 'background:x'},
+      );
+
+      final response = await client
+          .request('GET', '/events?since=0&instance=foreground:a')
+          .timeout(
+            const Duration(seconds: 5),
+            onTimeout: () => fail('הבקשה נכנסה להמתנה ארוכה במקום להיענות מיד'),
+          );
+      expect(response.json['engineMine'], isTrue);
+      expect((response.json['engine'] as Map)['owner'], 'foreground:a');
+    }, timeout: const Timeout(Duration(seconds: 15)));
+
+    test('בלי instance הבקשה עובדת כמו קודם', () async {
+      // curl ובדיקות ידניות, וגם תוסף מגרסה קודמת. מזהה ריק אינו לוקח את
+      // ההחזקה ואינו נחסם על ידה, ולכן `owner` נשאר ריק.
+      final response = await client.request('GET', '/events?since=-1');
+      expect(response.json['engineMine'], isTrue);
+      expect((response.json['engine'] as Map)['owner'], isNull);
+    });
+  });
+
+  group('POST /engine/release', () {
+    test('שחרור מפנה את ההחזקה למופע הבא', () async {
+      await client.request('GET', '/events?since=-1&instance=background:x');
+      final blocked = await client.request(
+        'GET',
+        '/events?since=-1&instance=foreground:a',
+      );
+      expect(blocked.json['engineMine'], isFalse);
+
+      final released = await client.request(
+        'POST',
+        '/engine/release',
+        body: {'instance': 'background:x'},
+      );
+      expect((released.json['engine'] as Map)['owner'], isNull);
+
+      final taken = await client.request(
+        'GET',
+        '/events?since=-1&instance=foreground:a',
+      );
+      expect(taken.json['engineMine'], isTrue);
+    }, timeout: const Timeout(Duration(seconds: 40)));
+
+    test('בלי instance נדחה', () async {
+      final response = await client.request('POST', '/engine/release', body: {});
+      expect(response.status, 400);
+    });
   });
 
   group('/startup', () {

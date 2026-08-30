@@ -15,6 +15,16 @@ const Duration presenceInterval = Duration(seconds: 20);
 /// מכשיר שלא נשמע ממנו כלום בפרק זמן זה נחשב מנותק.
 const Duration peerTimeout = Duration(seconds: 70);
 
+/// כמה זמן ההחזקה על מנוע הסנכרון נשארת בתוקף בלי שהמחזיק יגלה סימן חיים.
+///
+/// המנוע ממתין על `/events` בלופ, וההמתנה נסגרת אחרי `longPollTimeout`
+/// (25 שניות) גם כשלא קרה כלום — כלומר מנוע חי פונה לפחות פעם ב-25 שניות.
+/// 45 שניות משאירות מרווח לרשת איטית ובכל זאת מעבירות את ההחזקה במהירות.
+const Duration engineLeaseTimeout = Duration(seconds: 45);
+
+/// תחילית מזהה המופע של מנוע שרץ ברקע. ראו [SyncHub.claimEngine].
+const String backgroundEnginePrefix = 'background';
+
 class PeerInfo {
   PeerInfo({required this.id, required this.name, required this.lastSeenMs});
 
@@ -97,6 +107,20 @@ class SyncHub {
   /// המיקום האחרון שהתוסף המקומי דיווח עליו.
   SyncLocation? _localLocation;
 
+  /// מזהה המופע שמחזיק כרגע את מנוע הסנכרון, ומתי נשמע ממנו לאחרונה.
+  ///
+  /// לתוסף אוצריא יש שני מופעים על אותו מחשב — לשונית ורקע — ורק אחד מהם
+  /// אמור להריץ את המנוע: שניים יחד מנווטים פעמיים ומדווחים פעמיים. עד
+  /// עכשיו החלוקה נגזרה בצד התוסף מרשימת ההרשאות, וזו הייתה **נחישה**:
+  /// הלשונית ויתרה על המנוע ברגע ש-`app.run_on_startup` אושרה, בלי שום
+  /// דרך לדעת אם מופע הרקע באמת חי. כשהוא לא היה חי — הרשאת keep-alive
+  /// שלא אושרה ואוצריא סוגרת את המופע אחרי כשלוש דקות — הסנכרון נעצר
+  /// בשקט מוחלט: אף אחד לא דיווח מיקום ואף אחד לא המתין לעדכון.
+  ///
+  /// המתאם הוא הנקודה היחידה ששני המופעים רואים, ולכן ההכרעה כאן.
+  String? _engineInstance;
+  int _engineSeenAtMs = 0;
+
   /// המיקום המרוחק האחרון שנמסר לתוסף, וזמן המסירה — בסיס זיהוי ההד.
   SyncLocation? _lastHandedToPlugin;
   int _lastHandedToPluginAtMs = 0;
@@ -160,6 +184,80 @@ class SyncHub {
     config.deviceName = trimmed;
     await config.save();
     if (config.isPaired) await _announcePresence();
+  }
+
+  /// האם ההחזקה על המנוע פנויה כרגע (אין מחזיק, או שהוא נדם).
+  bool get _engineLeaseFree =>
+      _engineInstance == null ||
+      _nowMs - _engineSeenAtMs > engineLeaseTimeout.inMilliseconds;
+
+  /// מבקש את ההחזקה על מנוע הסנכרון עבור [instance], ומחזיר האם היא בידיו.
+  ///
+  /// מופע שקיבל אמת מריץ את הסנכרון; מופע שקיבל שקר רק מציג מצב. כל פנייה
+  /// של המחזיק מחדשת את ההחזקה, ולכן אין צורך בפעימה נפרדת.
+  ///
+  /// **רקע גובר על לשונית, גם כשהלשונית הגיעה ראשונה.** הלשונית מוקפאת
+  /// ברגע שהמשתמש עובר לספר, ואילו מופע הרקע חי כל זמן שאוצריא פתוחה —
+  /// ולכן הוא המחזיק הנכון כשהוא קיים. בכיוון ההפוך אין העברה: לשונית
+  /// אינה חוטפת מרקע חי, ומקבלת את המנוע רק כשההחזקה נדמה.
+  bool claimEngine(String instance) {
+    if (instance.isEmpty) return true;
+    final holder = _engineInstance;
+    final isBackground = instance.startsWith(backgroundEnginePrefix);
+    final holderIsBackground =
+        holder != null && holder.startsWith(backgroundEnginePrefix);
+    final granted =
+        holder == instance ||
+        _engineLeaseFree ||
+        (isBackground && !holderIsBackground);
+    if (!granted) return false;
+    _engineInstance = instance;
+    _engineSeenAtMs = _nowMs;
+    if (holder != instance) {
+      onLog?.call('מנוע הסנכרון עבר אל $instance');
+      // המחזיק הקודם ממתין כרגע על `/events` עד 25 שניות, ועד שהוא יתעורר
+      // שני המופעים חושבים ששניהם מסנכרנים. ההערה כאן מקצרת את החלון הזה
+      // לאפס: הוא מתעורר, מבקש שוב, ומקבל תשובה שההחזקה אינה שלו.
+      _wakeWaiters();
+    }
+    return true;
+  }
+
+  /// מחדש את ההחזקה של [instance] — **אך ורק אם היא עדיין בידיו**.
+  ///
+  /// זה מה ש-`/events` עושה בתום ההמתנה הארוכה, ולא [claimEngine]: בקשה
+  /// שהוגשה בשם מופע מסוים אינה רשאית *לרכוש* את ההחזקה מחדש בסופה. אחרת
+  /// מופע שנסגר ושחרר את ההחזקה היה חוטף אותה בחזרה מיד — ההמתנה שלו
+  /// עצמה עדיין תלויה, [releaseEngine] מעיר אותה, והיא הייתה מוצאת החזקה
+  /// פנויה ולוקחת אותה בשם מופע שכבר אינו קיים.
+  bool refreshEngine(String instance) {
+    if (instance.isEmpty) return true;
+    if (_engineInstance != instance) return false;
+    _engineSeenAtMs = _nowMs;
+    return true;
+  }
+
+  /// מופע שנסגר מסודר משחרר את ההחזקה, כדי שהמופע האחר ייכנס מיד ולא
+  /// ימתין עד תום [engineLeaseTimeout].
+  void releaseEngine(String instance) {
+    if (_engineInstance != instance) return;
+    _engineInstance = null;
+    _engineSeenAtMs = 0;
+    onLog?.call('מנוע הסנכרון שוחרר על ידי $instance');
+    // המופע האחר ממתין כרגע על `/events`; בלי ההערה הזאת הוא היה מגלה
+    // שההחזקה פנויה רק בסבב הבא.
+    _wakeWaiters();
+  }
+
+  /// המופע שמחזיק את המנוע כרגע, או `null` אם ההחזקה פנויה או נדמה.
+  String? get engineOwner => _engineLeaseFree ? null : _engineInstance;
+
+  /// מצב ההחזקה, לתצוגה ולאבחון. `owner` הוא `null` כשאין מנוע רץ בכלל —
+  /// וזה בדיוק המצב שעד עכשיו היה בלתי נראה משום מקום.
+  Map<String, Object?> engineStatus() {
+    final holder = engineOwner;
+    if (holder == null) return {'owner': null, 'ageMs': null};
+    return {'owner': holder, 'ageMs': _nowMs - _engineSeenAtMs};
   }
 
   /// התוסף מדווח על מיקום הקריאה המקומי.
@@ -317,9 +415,20 @@ class SyncHub {
       'datagramsFromOthers': transport.datagramsFromOthers,
       'datagramsRejected': transport.datagramsRejected,
       'lastRemoteSource': transport.lastRemoteSource,
+      // `sending: false` = כרטיס שנמנה אך מעולם לא יצא ממנו שידור. זה מצבם
+      // הרגיל של Wi-Fi Direct ו-Bluetooth PAN שאין בצדם אף אחד, ובלי השדה
+      // הזה שורת הקישורים מציגה אותם כאילו הם קישור אמיתי.
       'links': transport.routes
-          .map((r) => {'local': r.local, 'broadcast': r.broadcast})
+          .map((r) => {
+            'local': r.local,
+            'broadcast': r.broadcast,
+            'sending': transport.isSending(r.local),
+          })
           .toList(),
+      // מי מריץ את הסנכרון בפועל. ראו [claimEngine]: `owner: null` פירושו
+      // שאף מופע של התוסף אינו מסנכרן עכשיו — לא מדווח מיקום ולא ממתין
+      // לעדכון — וזה נראה מבחוץ בדיוק כמו תקלת רשת.
+      'engine': engineStatus(),
       'remoteSequence': _remoteSequence,
       'remote': _remote?.toJson(),
       'localLocation': _localLocation?.toJson(),
