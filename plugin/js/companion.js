@@ -240,6 +240,64 @@ const Companion = (function () {
     },
 
     /**
+     * דיווח על הספרים הפתוחים בשולחן כאן — **תמונת מצב מלאה**, ולא
+     * רשימת חדשים.
+     *
+     * לאוצריא אין אירוע "נפתח טאב", ולכן התוסף סורק את מצב הקורא ואינו
+     * יודע לומר מה השתנה; ההפרש — פתיחות וסגירות גם יחד — מחושב במתאם,
+     * שהוא היחיד שרואה גם את הצד השני.
+     *
+     * `canClose` אומר למתאם אם יש טעם לבקש סגירות, ו-`failed` הם ספרים
+     * שלא הצלחנו לפתוח כאן (בדרך כלל אינם בספרייה).
+     */
+    publishDesk: function (payload) {
+      return withCompanion(function () {
+        return request('/tabs', {
+          method: 'POST',
+          body: {
+            instance: instance,
+            tabs: payload.tabs,
+            canClose: payload.canClose === true,
+            failed: payload.failed || [],
+          },
+        });
+      });
+    },
+
+    /** העברת ספרים שפתוחים כאן אל השולחן המשותף. */
+    carryToDesk: function (bookIds) {
+      return withCompanion(function () {
+        return request('/desk/carry', {
+          method: 'POST',
+          body: { bookIds: bookIds },
+        });
+      });
+    },
+
+    /** "לא לסגור את הספר הזה" — כדי שהשאלה לא תחזור בכל סבב. */
+    dismissClose: function (bookId) {
+      return withCompanion(function () {
+        return request('/desk/dismiss', {
+          method: 'POST',
+          body: { bookId: bookId },
+        });
+      });
+    },
+
+    /**
+     * שינוי העדפות הסנכרון: מקום הלימוד, ומדיניות הסגירה.
+     *
+     * ההעדפות נשמרות במתאם ולא בזיכרון התוסף, כי **שני מופעי התוסף**
+     * צריכים לראות אותן: הרקע הוא בדרך כלל זה שמסנכרן, והלשונית היא זו
+     * שבה המשתמש לוחץ. המתאם הוא הנקודה היחידה ששניהם רואים.
+     */
+    setSettings: function (settings) {
+      return withCompanion(function () {
+        return request('/settings', { method: 'POST', body: settings });
+      });
+    },
+
+    /**
      * מודיע למתאם שהמופע הזה מפסיק לסנכרן, כדי שהמופע האחר ייכנס מיד
      * ולא ימתין עד שההחזקה תפוג. כשל כאן אינו מעניין: ההחזקה פגה לבדה.
      */

@@ -2,15 +2,41 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+/// מה קורה כאן כשהחברותא סוגרת ספר.
+///
+/// סגירה אינה סימטרית לפתיחה: ספר שנפתח אצל החברותא אפשר תמיד לפתוח גם
+/// כאן, אבל ספר שהיא סגרה יכול להיות בדיוק זה שאני באמצע. לכן ברירת
+/// המחדל היא **לשאול**, ולא לסגור.
+enum ClosePolicy {
+  /// שואלים בכל פעם: "החברותא סגרה את X — לסגור גם כאן?".
+  ask,
+
+  /// סוגרים מיד, בלי לשאול. שני השולחנות זהים תמיד.
+  always,
+
+  /// לא סוגרים כלום. הפתיחה מסתנכרנת, הסגירה לא.
+  never;
+
+  String get wire => name;
+
+  static ClosePolicy fromWire(Object? value) => switch (value) {
+    'always' => ClosePolicy.always,
+    'never' => ClosePolicy.never,
+    _ => ClosePolicy.ask,
+  };
+}
+
 /// קונפיגורציה מתמשכת של המתאם.
 ///
-/// נשמרת ב-`%LOCALAPPDATA%\Chavruta\config.json`. שלושה שדות בלבד:
-/// זהות המכשיר (נוצרת פעם אחת), שם תצוגה, וקוד החברותא שהמשתמש הקליד.
+/// נשמרת ב-`%LOCALAPPDATA%\Chavruta\config.json`: זהות המכשיר (נוצרת פעם
+/// אחת), שם תצוגה, קוד החברותא שהמשתמש הקליד, והעדפות הסנכרון.
 class CompanionConfig {
   CompanionConfig({
     required this.deviceId,
     required this.deviceName,
     this.roomCode,
+    this.syncLocation = true,
+    this.closePolicy = ClosePolicy.ask,
     Directory? storageDir,
   }) : storageDir = storageDir ?? defaultStorageDir;
 
@@ -22,6 +48,19 @@ class CompanionConfig {
 
   /// קוד החברותא. `null` = לא מזווג, ואז לא משדרים ולא מקבלים כלום.
   String? roomCode;
+
+  /// האם לסנכרן גם את **מקום הלימוד** בתוך הספר, ולא רק את השולחן.
+  ///
+  /// דלוק כברירת מחדל — זה מה שהחברותא הייתה מאז ומעולם. אפשר לכבות
+  /// כששניים לומדים את אותם ספרים בקצב שונה.
+  ///
+  /// ההגדרה יושבת במתאם ולא בזיכרון התוסף, כי **שני מופעי התוסף**
+  /// (לשונית ורקע) צריכים לראות אותה, והמתאם הוא הנקודה היחידה ששניהם
+  /// רואים — בדיוק כמו ההכרעה מי מריץ את המנוע.
+  bool syncLocation;
+
+  /// מה לעשות כשהחברותא סוגרת ספר. ראו [ClosePolicy].
+  ClosePolicy closePolicy;
 
   /// התיקייה שבה יושב הקונפיג. פרמטר ולא קבוע גלובלי, כדי שבדיקות
   /// יוכלו לרוץ בתיקייה זמנית ולא לדרוך על הקונפיג של המשתמש.
@@ -70,6 +109,8 @@ class CompanionConfig {
               roomCode: rawRoom is String && rawRoom.trim().isNotEmpty
                   ? normalizeRoomCode(rawRoom)
                   : null,
+              syncLocation: json['syncLocation'] != false,
+              closePolicy: ClosePolicy.fromWire(json['closePolicy']),
               storageDir: dir,
             );
           }
@@ -94,6 +135,8 @@ class CompanionConfig {
         'deviceId': deviceId,
         'deviceName': deviceName,
         if (isPaired) 'roomCode': roomCode,
+        if (!syncLocation) 'syncLocation': false,
+        if (closePolicy != ClosePolicy.ask) 'closePolicy': closePolicy.wire,
       }),
     );
   }

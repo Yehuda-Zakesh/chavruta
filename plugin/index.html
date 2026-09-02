@@ -118,6 +118,55 @@
             </div>
           </section>
 
+          <!--
+            מוצג רק ברגע ההתחברות: מה מהספרים שכבר פתוחים אצלך להעביר
+            אל השולחן המשותף. מה שלא יועבר נשאר פרטי לגמרי.
+          -->
+          <section class="card hidden" id="carryCard">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 4.4v11" />
+                  <path d="M8.2 8.2 12 4.4l3.8 3.8" />
+                  <path d="M4.6 19.4h14.8" />
+                </svg>
+              </span>
+              <span class="card-title">מה להעביר לשולחן המשותף</span>
+            </div>
+            <p class="hint">
+              השולחן המשותף מתחיל ריק. מה שתסמנו ייפתח גם אצל החברותא
+              ויסתנכרן מכאן והלאה; מה שלא — נשאר אצלכם בלבד.
+            </p>
+            <ul class="carry-list" id="carryList"></ul>
+            <div class="field">
+              <button class="btn btn-primary" id="carryAll" type="button">להעביר הכל</button>
+              <button class="btn btn-tonal" id="carrySome" type="button">להעביר את המסומן</button>
+              <button class="btn btn-ghost" id="carrySkip" type="button">לא להעביר</button>
+            </div>
+          </section>
+
+          <!-- "החברותא סגרה ספר — לסגור גם כאן?" -->
+          <section class="card hidden" id="closeCard">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="8.4" />
+                  <path d="M12 7.6v5" />
+                  <path d="M12 16.2h.01" />
+                </svg>
+              </span>
+              <span class="card-title">החברותא סגרה</span>
+            </div>
+            <p class="hint">
+              <b id="closeList"></b><br />
+              לסגור גם כאן? מה שתשאירו פתוח יישאר פתוח, ולא תישאלו עליו שוב.
+            </p>
+            <div class="field">
+              <button class="btn btn-primary" id="closeYes" type="button">לסגור גם כאן</button>
+              <button class="btn btn-ghost" id="closeNo" type="button">להשאיר פתוח</button>
+            </div>
+          </section>
+
           <section class="card">
             <div class="card-head">
               <span class="card-icon" aria-hidden="true">
@@ -148,6 +197,65 @@
               </span>
               <span class="detail-label">המקום של החברותא</span>
               <span class="detail-value" id="remoteSpot">—</span>
+            </div>
+
+            <div class="detail">
+              <span class="detail-icon" aria-hidden="true">
+                <!-- שני טאבים זה לצד זה -->
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3.4 8.2h7.2v11.4H3.4z" />
+                  <path d="M13.4 8.2h7.2v11.4h-7.2z" />
+                  <path d="M5.6 5.2h12.8" />
+                </svg>
+              </span>
+              <span class="detail-label">השולחן המשותף</span>
+              <span class="detail-value" id="deskCount">—</span>
+            </div>
+
+            <!--
+              מוצג כשאתם מזווגים אך אינכם בשולחן המשותף — למשל אחרי
+              הפעלה מחדש, או אחרי שעבדתם בשולחן אחר. בלעדיו אין דרך
+              לחזור אליו חוץ מיציאה והתחברות מחדש.
+            -->
+            <button class="btn btn-tonal hidden" id="enterDesk" type="button">
+              מעבר לשולחן המשותף
+            </button>
+
+
+            <div class="detail">
+              <span class="detail-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4.2 12h15.6" />
+                  <path d="M14.6 6.8 19.8 12l-5.2 5.2" />
+                </svg>
+              </span>
+              <span class="detail-label">סנכרון מקום הלימוד</span>
+              <span class="detail-field">
+                <label class="switch">
+                  <input type="checkbox" id="locationToggle" checked />
+                  <span class="switch-track" aria-hidden="true">
+                    <span class="switch-knob"></span>
+                  </span>
+                  <span class="switch-text" id="locationText">בודק…</span>
+                </label>
+              </span>
+            </div>
+
+            <div class="detail">
+              <span class="detail-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6.2 6.2 17.8 17.8" />
+                  <path d="M17.8 6.2 6.2 17.8" />
+                </svg>
+              </span>
+              <span class="detail-label">כשהחברותא סוגרת ספר</span>
+              <span class="detail-field">
+                <select class="input" id="closePolicy">
+                  <option value="ask">לשאול אותי</option>
+                  <option value="always">לסגור גם כאן</option>
+                  <option value="never">לא לסגור</option>
+                </select>
+              </span>
             </div>
 
             <div class="detail">

@@ -14,6 +14,16 @@
   /** הקוד שהמשתמש הקליד, כדי למלא את השדה בפתיחה הבאה. */
   const ROOM_KEY = 'roomCode';
 
+  /**
+   * הצעת ההעברה שממתינה לשאלה — אותו מפתח שהמנוע כותב אליו.
+   *
+   * **המעבר לשולחן המשותף הורג את הדף הזה.** `plugin.openSelf` פותח
+   * לשונית חדשה בשולחן החדש, ולכן רשימה שנשמרה רק בזיכרון נעלמת לפני
+   * שהמשתמש הספיק לראות אותה. הרשימה נשמרת כאן לפני המעבר, והלשונית
+   * החדשה קוראת אותה ב-[loadPendingCarry].
+   */
+  const CARRY_KEY = 'carryPending';
+
   const el = {
     topbar: document.getElementById('topbar'),
     appContent: document.getElementById('appContent'),
@@ -36,6 +46,20 @@
     remoteSpot: document.getElementById('remoteSpot'),
     nameInput: document.getElementById('nameInput'),
     nameButton: document.getElementById('nameButton'),
+    deskCount: document.getElementById('deskCount'),
+    enterDesk: document.getElementById('enterDesk'),
+    locationToggle: document.getElementById('locationToggle'),
+    locationText: document.getElementById('locationText'),
+    closePolicy: document.getElementById('closePolicy'),
+    carryCard: document.getElementById('carryCard'),
+    carryList: document.getElementById('carryList'),
+    carryAll: document.getElementById('carryAll'),
+    carrySome: document.getElementById('carrySome'),
+    carrySkip: document.getElementById('carrySkip'),
+    closeCard: document.getElementById('closeCard'),
+    closeList: document.getElementById('closeList'),
+    closeYes: document.getElementById('closeYes'),
+    closeNo: document.getElementById('closeNo'),
     companionCard: document.getElementById('companionCard'),
     startupToggle: document.getElementById('startupToggle'),
     startupText: document.getElementById('startupText'),
@@ -50,6 +74,15 @@
 
   /** האם מצב "עולה עם המחשב" נקרא מהמתאם מאז שהוא נמצא. */
   let startupLoaded = false;
+
+  /** האם שינוי העדפה בעיצומו — אז הרענון אינו דורס את הפקד. */
+  let settingsBusy = false;
+
+  /** הספרים שמוצעים להעברה לשולחן המשותף. ראו [offerCarry]. */
+  let carryOptions = [];
+
+  /** ספרים שהחברותא סגרה וממתינים לתשובה שלך. ראו [renderCloseAsk]. */
+  let pendingCloses = [];
 
   /** הקוד שהזיווג הנוכחי נעשה בו — למען ה-chip שבכרטיס הראשי. המתאם מדווח
    *  אם יש זיווג, אך לא את הקוד עצמו, ולכן הוא נזכר כאן. */
@@ -268,8 +301,115 @@
     );
   }
 
+  /**
+   * מציג את מצב השולחן המשותף ואת ההעדפות, כפי שהמתאם מדווח אותם.
+   *
+   * המקור הוא תמיד המתאם ולא זיכרון הלשונית: ההעדפות נשמרות אצלו כדי
+   * ששני מופעי התוסף יראו אותן, והלשונית רק משקפת. לכן היא גם אינה
+   * דורסת פקד שהמשתמש בדיוק משנה.
+   */
+  /**
+   * מציג את הכפתור "פתיחת השולחן המשותף" כשצריך.
+   *
+   * מי שכבר היה מזווג מקודם לא עבר בזרימת ההתחברות, ולכן הוא אינו בשולחן
+   * המשותף — והסנכרון שותק. בלי הכפתור הזה אין שום דרך לחזור אליו חוץ
+   * מיציאה והתחברות מחדש. הוא גם הדרך היומיומית לחזור אחרי שעבדתם
+   * בשולחן אחר.
+   */
+  async function refreshDeskEntry(paired) {
+    if (!paired) {
+      if (el.enterDesk) el.enterDesk.classList.add('hidden');
+      clearBanner('desk');
+      return;
+    }
+    let inside = false;
+    try {
+      inside = await SyncEngine.inDesk();
+    } catch (e) {
+      inside = false;
+    }
+    if (el.enterDesk) el.enterDesk.classList.toggle('hidden', inside);
+
+    // **המשתמש חייב לדעת באיזה שולחן הוא נמצא.** מעבר שולחן מחליף את
+    // כל הטאבים, ובלי השורה הזאת "למה הספרים שלי נעלמו" הוא שאלה
+    // סבירה לגמרי.
+    if (inside) {
+      banner(
+        'desk',
+        '',
+        'אתם בשולחן העבודה "חברותא"',
+        'כל ספר שנפתח כאן נפתח גם אצל החברותא. הספרים שבשולחנות ' +
+          'האחרים שלכם נשארו שם, פרטיים לגמרי.<br />' +
+          'כדי להביא ספר משולחן אחר: עברו אליו, פתחו שם את לשונית ' +
+          'חברותא, ולחצו "מעבר לשולחן המשותף" — הספרים שפתוחים שם ' +
+          'יוצעו להעברה.'
+      );
+    } else if (SyncEngine.deskSupported === false) {
+      // מצב שונה לגמרי מ"אינך בשולחן": כאן אין בכלל מה לעשות, ואסור
+      // לשלוח את המשתמש לחפש שולחן שאוצריא שלו אינה יודעת לפתוח.
+      banner(
+        'desk',
+        '',
+        'גרסת אוצריא הזאת אינה תומכת בשולחן משותף',
+        'מקום הלימוד מסתנכרן כרגיל. שדרוג של אוצריא יפעיל גם את ' +
+          'סנכרון הספרים.'
+      );
+    } else {
+      banner(
+        'desk',
+        '',
+        'אתם לא בשולחן המשותף',
+        'הסנכרון של הספרים פועל רק בשולחן העבודה "חברותא". ' +
+          'מקום הלימוד ממשיך להסתנכרן כרגיל.'
+      );
+    }
+  }
+
+  /** נכנס לשולחן המשותף ומציע להעביר אליו את מה שפתוח עכשיו. */
+  async function enterDesk() {
+    el.enterDesk.disabled = true;
+    try {
+      const before = await readCarryOptions();
+      // נשמר **לפני** המעבר: המעבר פותח את הלשונית מחדש, וכל מה שלא
+      // נכתב לאחסון עד כאן לא ישרוד כדי להישאל.
+      await rememberPendingCarry(before);
+      if (!(await SyncEngine.enterDesk())) {
+        forgetPendingCarry();
+        notifyError('לא הצלחתי לפתוח את השולחן המשותף.');
+        return;
+      }
+      offerCarry(before);
+      await refresh();
+    } finally {
+      el.enterDesk.disabled = false;
+    }
+  }
+
+  function renderDesk(state) {
+    refreshDeskEntry(state && state.paired === true);
+    const shared = state && typeof state.deskCount === 'number'
+      ? state.deskCount
+      : 0;
+    el.deskCount.textContent = shared === 0
+      ? 'ריק — ספר שייפתח כאן ייפתח גם אצל החברותא'
+      : shared === 1
+        ? 'ספר אחד משותף'
+        : shared + ' ספרים משותפים';
+
+    if (!settingsBusy) {
+      el.locationToggle.checked = !(state && state.syncLocation === false);
+      el.locationText.textContent = el.locationToggle.checked
+        ? 'דלוק — כשאחד עובר דף, השני עובר איתו'
+        : 'כבוי — כל אחד גולל בקצב שלו';
+      if (state && typeof state.closePolicy === 'string') {
+        el.closePolicy.value = state.closePolicy;
+      }
+    }
+  }
+
   function renderState(state) {
     el.deviceLabel.textContent = state.deviceName || '';
+    renderDesk(state);
     if (!nameDirty && document.activeElement !== el.nameInput) {
       el.nameInput.value = state.deviceName || '';
     }
@@ -608,17 +748,179 @@
     }
     el.joinButton.disabled = true;
     try {
+      // **הספרים הפתוחים נקראים לפני המעבר לשולחן החברותא.** אחרי
+      // המעבר הם כבר אינם פתוחים — הם נשמרו בשולחן הקודם — וזו הרשימה
+      // שהמשתמש בוחר ממנה מה להעביר.
+      const before = await readCarryOptions();
+
       await Companion.setRoom(code);
       await Otzaria.call('storage.set', { key: ROOM_KEY, value: code });
       activeRoom = code;
       // הקוד נאמר לו כרגע במפורש; אין צורך שהרענון יאמר אותו שוב.
       roomAssertedPort = Companion.port;
-      Otzaria.call('ui.showSuccess', { message: 'מחובר לחברותא' });
+
+      await rememberPendingCarry(before);
+      const entered = await SyncEngine.enterDesk();
+      if (entered) {
+        Otzaria.call('ui.showSuccess', {
+          message: 'מחובר לחברותא — נפתח שולחן עבודה משותף',
+        });
+        offerCarry(before);
+      } else {
+        forgetPendingCarry();
+        Otzaria.call('ui.showSuccess', { message: 'מחובר לחברותא' });
+      }
       await refresh();
     } catch (e) {
       notifyError('החיבור לחברותא נכשל: ' + e.message);
     } finally {
       el.joinButton.disabled = false;
+    }
+  }
+
+  /**
+   * הספרים הפתוחים כאן עכשיו — המועמדים להעברה לשולחן המשותף.
+   *
+   * נקרא **לפני** המעבר לשולחן החברותא, כי המעבר מחליף את הטאבים.
+   */
+  async function readCarryOptions() {
+    try {
+      const books = await SyncEngine.readDesk();
+      return books.map(function (book) {
+        return { b: book.b, i: book.i };
+      });
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /**
+   * מציג את השאלה "מה להעביר לשולחן המשותף?".
+   *
+   * השולחן המשותף מתחיל **ריק**, ובכוונה: מה שפתוח אצלך עכשיו הוא שלך,
+   * ורק מה שתבחר להעביר נעשה משותף ומסתנכרן.
+   */
+  function offerCarry(books) {
+    carryOptions = Array.isArray(books) ? books : [];
+    renderCarry();
+  }
+
+  function renderCarry() {
+    const has = carryOptions.length > 0;
+    el.carryCard.classList.toggle('hidden', !has);
+    if (!has) return;
+
+    el.carryList.innerHTML = '';
+    carryOptions.forEach(function (book, position) {
+      const item = document.createElement('li');
+      item.className = 'carry-item';
+
+      const label = document.createElement('label');
+      label.className = 'carry-label';
+
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = true;
+      box.dataset.position = String(position);
+
+      const name = document.createElement('span');
+      name.textContent = book.b;
+
+      label.appendChild(box);
+      label.appendChild(name);
+      item.appendChild(label);
+      el.carryList.appendChild(item);
+    });
+  }
+
+  /** מעביר לשולחן המשותף את מה שסומן, פשוט בכך שהוא נפתח שם. */
+  async function carrySelected(all) {
+    const boxes = el.carryList.querySelectorAll('input[type="checkbox"]');
+    const chosen = [];
+    boxes.forEach(function (box) {
+      if (!all && !box.checked) return;
+      const book = carryOptions[Number(box.dataset.position)];
+      if (book) chosen.push(book);
+    });
+
+    el.carryAll.disabled = true;
+    el.carrySome.disabled = true;
+    try {
+      for (let i = 0; i < chosen.length; i++) {
+        try {
+          await Otzaria.call('reader.openBook', {
+            bookId: chosen[i].b,
+            index: chosen[i].i,
+          });
+        } catch (e) {
+          // ספר שלא נפתח — נדלג עליו ונמשיך לשאר.
+        }
+      }
+      // הסריקה הבאה תראה אותם ותשתף; זירוז כדי שזה ירגיש מיידי.
+      await SyncEngine.rescanDesk();
+      carryOptions = [];
+      renderCarry();
+      forgetPendingCarry();
+      if (chosen.length > 0) {
+        Otzaria.call('ui.showSuccess', {
+          message: chosen.length === 1
+            ? 'הספר הועבר לשולחן המשותף'
+            : chosen.length + ' ספרים הועברו לשולחן המשותף',
+        });
+      }
+      await refresh();
+    } finally {
+      el.carryAll.disabled = false;
+      el.carrySome.disabled = false;
+    }
+  }
+
+  /** מוותר על ההעברה. הספרים נשארים בשולחן הקודם, פרטיים לגמרי. */
+  function skipCarry() {
+    carryOptions = [];
+    renderCarry();
+    forgetPendingCarry();
+  }
+
+  /**
+   * קורא הצעת העברה שהמנוע השאיר אחריו.
+   *
+   * המעבר האוטומטי לשולחן המשותף קורה גם כשהלשונית סגורה (מופע הרקע הוא
+   * שמסנכרן), ואז אין את מי לשאול. המנוע שומר את מה שהיה פתוח, והלשונית
+   * שואלת בפעם הבאה שהיא נפתחת.
+   */
+  async function loadPendingCarry() {
+    if (carryOptions.length > 0) return;
+    try {
+      const res = await Otzaria.call('storage.get', { key: CARRY_KEY });
+      const books = res && res.success ? res.data : null;
+      if (Array.isArray(books) && books.length > 0) offerCarry(books);
+    } catch (e) {
+      // אין הצעה שמורה.
+    }
+  }
+
+  /**
+   * שומר את הצעת ההעברה כדי שתשרוד את המעבר לשולחן המשותף.
+   *
+   * כישלון בשמירה אינו עוצר את המעבר — במקרה הנדיר שבו הלשונית כן
+   * שורדת אותו, [offerCarry] עדיין תציג את הכרטיס מהזיכרון.
+   */
+  async function rememberPendingCarry(books) {
+    if (!Array.isArray(books) || books.length === 0) return;
+    try {
+      await Otzaria.call('storage.set', { key: CARRY_KEY, value: books });
+    } catch (e) {
+      // ההצעה היא נוחות; אין לה השפעה על הסנכרון עצמו.
+    }
+  }
+
+  function forgetPendingCarry() {
+    try {
+      const call = Otzaria.call('storage.remove', { key: CARRY_KEY });
+      if (call && typeof call.catch === 'function') call.catch(function () {});
+    } catch (e) {
+      // לא נורא; ההצעה תוצג שוב ואפשר יהיה לוותר עליה שוב.
     }
   }
 
@@ -692,22 +994,145 @@
     }
   }
 
-  el.joinButton.addEventListener('click', join);
-  el.leaveButton.addEventListener('click', leave);
-  el.nameButton.addEventListener('click', saveName);
-  el.nameInput.addEventListener('input', function () {
+  /**
+   * שומר העדפה במתאם. פעולה אחת, ונשמרת: הוא זוכר אותה בין הפעלות
+   * ומספר עליה לשני מופעי התוסף.
+   */
+  async function saveSettings(settings, message) {
+    settingsBusy = true;
+    el.locationToggle.disabled = true;
+    el.closePolicy.disabled = true;
+    try {
+      const state = await Companion.setSettings(settings);
+      settingsBusy = false;
+      renderDesk(state);
+      if (message) Otzaria.call('ui.showSuccess', { message: message });
+    } catch (e) {
+      settingsBusy = false;
+      notifyError('שמירת ההעדפה נכשלה: ' + e.message);
+      await refresh();
+    } finally {
+      el.locationToggle.disabled = false;
+      el.closePolicy.disabled = false;
+    }
+  }
+
+  function toggleLocationSync() {
+    const wanted = el.locationToggle.checked;
+    return saveSettings(
+      { syncLocation: wanted },
+      wanted
+        ? 'מעכשיו כשאחד מכם עובר דף, השני עובר איתו'
+        : 'סנכרון מקום הלימוד כובה — השולחן ממשיך להסתנכרן'
+    );
+  }
+
+  function changeClosePolicy() {
+    const value = el.closePolicy.value;
+    const messages = {
+      ask: 'נשאל אותך בכל פעם שהחברותא סוגרת ספר',
+      always: 'ספר שהחברותא סוגרת ייסגר גם כאן',
+      never: 'סגירות של החברותא לא ישפיעו עליך',
+    };
+    return saveSettings({ closePolicy: value }, messages[value]);
+  }
+
+  /**
+   * שאלת הסגירה: "החברותא סגרה את X — לסגור גם כאן?".
+   *
+   * המנוע מציג הודעה שאפשר ללחוץ עליה, והלחיצה מגיעה לכאן ופותחת את
+   * הכרטיס הזה. כך אין חלון שקוטע את הלימוד.
+   */
+  function renderCloseAsk() {
+    const has = pendingCloses.length > 0;
+    el.closeCard.classList.toggle('hidden', !has);
+    if (!has) return;
+    el.closeList.textContent = pendingCloses.join(', ');
+  }
+
+  async function answerClose(shouldClose) {
+    const names = pendingCloses.slice();
+    if (names.length === 0) return;
+    el.closeYes.disabled = true;
+    el.closeNo.disabled = true;
+    try {
+      if (shouldClose) {
+        const closed = await SyncEngine.closeBooksByName(names);
+        if (!closed) {
+          // הכרטיס נשאר פתוח: התשובה לא בוצעה, ואסור שהיא תיראה כאילו כן.
+          notifyError('לא הצלחתי לסגור. הפרטים בהודעה שקפצה.');
+          return;
+        }
+        Otzaria.call('ui.showSuccess', {
+          message: names.length === 1
+            ? 'הספר נסגר גם כאן'
+            : names.length + ' ספרים נסגרו גם כאן',
+        });
+      } else {
+        // "לא" נאמר למתאם, אחרת השאלה הייתה חוזרת בכל סבב.
+        for (let i = 0; i < names.length; i++) {
+          try {
+            await Companion.dismissClose(names[i]);
+          } catch (e) {
+            // כשל בודד אינו מפיל את השאר.
+          }
+        }
+      }
+      pendingCloses = [];
+      renderCloseAsk();
+      await refresh();
+    } finally {
+      el.closeYes.disabled = false;
+      el.closeNo.disabled = false;
+    }
+  }
+
+
+  /**
+   * מחבר מאזין רק אם האלמנט קיים.
+   *
+   * במצב פיתוח אוצריא מרעננת את ה-WebView בכל שמירה, וקובץ JS יכול
+   * להיטען לצד HTML ישן. אלמנט חסר היה מפיל את כל הקובץ — כלומר גם את
+   * מנוע הסנכרון — ומשאיר לשונית ריקה בלי שום רמז למה.
+   */
+  function on(node, event, handler, options) {
+    if (node) node.addEventListener(event, handler, options);
+  }
+
+  on(el.joinButton, 'click', join);
+  on(el.enterDesk, 'click', enterDesk);
+  on(el.locationToggle, 'change', toggleLocationSync);
+  on(el.closePolicy, 'change', changeClosePolicy);
+  on(el.carryAll, 'click', function () {
+    carrySelected(true);
+  });
+  on(el.carrySome, 'click', function () {
+    carrySelected(false);
+  });
+  on(el.carrySkip, 'click', skipCarry);
+  on(el.closeYes, 'click', function () {
+    answerClose(true);
+  });
+  on(el.closeNo, 'click', function () {
+    answerClose(false);
+  });
+  on(el.leaveButton, 'click', leave);
+  on(el.nameButton, 'click', saveName);
+  on(el.nameInput, 'input', function () {
     nameDirty = true;
   });
-  el.startupToggle.addEventListener('change', toggleStartup);
-  el.roomInput.addEventListener('keydown', function (event) {
+  on(el.startupToggle, 'change', toggleStartup);
+  on(el.roomInput, 'keydown', function (event) {
     if (event.key === 'Enter') join();
   });
 
   // פס הכותרת מקבל צללית ברגע שהתוכן נגלל מתחתיו, כמו הסרגל של אוצריא.
-  el.appContent.addEventListener(
+  on(el.appContent, 
     'scroll',
     function () {
-      el.topbar.classList.toggle('scrolled', el.appContent.scrollTop > 2);
+      if (el.topbar) {
+        el.topbar.classList.toggle('scrolled', el.appContent.scrollTop > 2);
+      }
     },
     { passive: true }
   );
@@ -746,10 +1171,31 @@
       // אין קוד שמור — השדה נשאר ריק.
     }
 
+    loadPendingCarry();
     startRefreshing();
   });
 
   Otzaria.on('theme.changed', applyTheme);
+
+  /**
+   * לחיצה על ההודעה "החברותא סגרה ספרים" — ראו `askToClose` במנוע.
+   *
+   * ההודעה נשלחת ממופע הרקע, והלחיצה מגיעה לשני המופעים; הלשונית היא
+   * זו שיש לה מסך, ולכן היא זו שמציגה את השאלה.
+   */
+  Otzaria.on('ui.messageClicked', function (payload) {
+    const names = payload && payload.payload && payload.payload.deskCloses;
+    if (!Array.isArray(names) || names.length === 0) return;
+    pendingCloses = names.slice();
+    renderCloseAsk();
+    Otzaria.call('plugin.openSelf', {});
+  });
+
+  // פתיחת הלשונית מתוך ההודעה מגיעה גם כאן; הכרטיס כבר מוצג.
+  Otzaria.on('plugin.page_opened', function () {
+    renderCloseAsk();
+    renderCarry();
+  });
 
   // ה-WebView מושהה כשהמשתמש עובר ללשונית אחרת; אין טעם לתחקר את המתאם
   // בזמן הזה. מנוע הסנכרון, אם הוא בבעלות הלשונית, ממשיך לרוץ.

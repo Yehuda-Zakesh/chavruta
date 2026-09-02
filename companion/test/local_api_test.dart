@@ -487,4 +487,138 @@ void main() {
       expect(reg.calls, isEmpty);
     });
   });
+
+  group('השולחן המשותף', () {
+    /// דיווח ראשון קובע קו בסיס ואינו משתף כלום — ראו `_sawFirstReport`.
+    Future<({int status, Map<String, Object?> json})> baseline(
+      List<Map<String, Object?>> tabs,
+    ) =>
+        client.request('POST', '/tabs', body: {
+          'instance': 'background:x',
+          'tabs': tabs,
+          'canClose': true,
+        });
+
+    test('POST /tabs בלי מערך נדחה', () async {
+      final response = await client.request('POST', '/tabs', body: {
+        'tabs': 'ברכות',
+      });
+      expect(response.status, HttpStatus.badRequest);
+    });
+
+    test('POST /tabs עם מערך ריק הוא דיווח תקין', () async {
+      final response = await client.request('POST', '/tabs', body: {'tabs': []});
+      expect(response.status, HttpStatus.ok);
+      expect(response.json['localTabCount'], 0);
+    });
+
+    test('הדיווח הראשון מציע להעביר, והשני משתף מה שנפתח', () async {
+      final first = await baseline([
+        {'b': 'ברכות', 'i': 4},
+      ]);
+      expect(first.json['broadcast'], 0, reason: 'השולחן מתחיל ריק');
+      expect(
+        (first.json['carryCandidates'] as List).map((e) => (e as Map)['b']),
+        ['ברכות'],
+      );
+
+      final second = await client.request('POST', '/tabs', body: {
+        'tabs': [
+          {'b': 'ברכות', 'i': 4},
+          {'b': 'שבת'},
+        ],
+        'canClose': true,
+      });
+      expect(second.json['broadcast'], 1, reason: 'רק מה שנפתח עכשיו');
+      expect(second.json['deskCount'], 1);
+    });
+
+    test('POST /desk/carry מעביר לשולחן המשותף', () async {
+      await baseline([
+        {'b': 'ברכות'},
+        {'b': 'שבת'},
+      ]);
+
+      final response = await client.request('POST', '/desk/carry', body: {
+        'bookIds': ['ברכות'],
+      });
+      expect(response.status, HttpStatus.ok);
+      expect(response.json['carried'], 1);
+      expect(response.json['deskCount'], 1);
+      expect(
+        (response.json['carryCandidates'] as List).map((e) => (e as Map)['b']),
+        ['שבת'],
+      );
+    });
+
+    test('POST /desk/carry בלי מערך נדחה', () async {
+      final response = await client.request('POST', '/desk/carry', body: {
+        'bookIds': 'ברכות',
+      });
+      expect(response.status, HttpStatus.badRequest);
+    });
+
+    test('POST /desk/dismiss דורש שם ספר', () async {
+      final response = await client.request('POST', '/desk/dismiss', body: {});
+      expect(response.status, HttpStatus.badRequest);
+    });
+
+    test('POST /settings שומר את שתי ההעדפות', () async {
+      final off = await client.request('POST', '/settings', body: {
+        'syncLocation': false,
+        'closePolicy': 'always',
+      });
+      expect(off.json['syncLocation'], isFalse);
+      expect(off.json['closePolicy'], 'always');
+      expect(config.syncLocation, isFalse, reason: 'נשמר גם בקונפיג');
+      expect(config.closePolicy, ClosePolicy.always);
+    });
+
+    test('POST /settings דוחה ערכים שאינם מוכרים', () async {
+      final badPolicy = await client.request('POST', '/settings', body: {
+        'closePolicy': 'אולי',
+      });
+      expect(badPolicy.status, HttpStatus.badRequest);
+
+      final badToggle = await client.request('POST', '/settings', body: {
+        'syncLocation': 'כן',
+      });
+      expect(badToggle.status, HttpStatus.badRequest);
+
+      // ערך פסול אינו נבלע בשקט לברירת המחדל.
+      expect(config.closePolicy, ClosePolicy.ask);
+      expect(config.syncLocation, isTrue);
+    });
+
+    test('GET /events מוסר את תוכנית השולחן', () async {
+      await baseline(const []);
+      await transport.deliver(SyncMessage(
+        type: SyncMessageType.desk,
+        roomHash: SyncMessage.hashRoomCode('חדר'),
+        senderId: 'חברותא',
+        senderName: 'החברותא',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        sequence: 1,
+        entries: [
+          DeskEntry(
+            bookId: 'שבת',
+            index: 3,
+            stamp: DateTime.now().millisecondsSinceEpoch,
+            by: 'חברותא',
+          ),
+        ],
+      ));
+
+      final response = await client.request(
+        'GET',
+        '/events?since=999&instance=background:x',
+      );
+      final desk = response.json['desk'] as Map;
+      final toOpen = desk['open'] as List;
+      expect(toOpen, hasLength(1));
+      expect((toOpen.first as Map)['b'], 'שבת');
+      expect((toOpen.first as Map)['i'], 3);
+      expect(desk['close'], isEmpty);
+    });
+  });
 }

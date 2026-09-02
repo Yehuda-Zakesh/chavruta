@@ -211,4 +211,87 @@ void main() {
       expect(skews, isEmpty, reason: 'הודעה טרייה אינה מדווחת על פער');
     });
   });
+
+  group('הודעת שולחן', () {
+    const entries = [
+      DeskEntry(bookId: 'ברכות', index: 12, stamp: 700, by: 'aabb'),
+      DeskEntry(bookId: 'רש"י על בראשית', stamp: 701, by: 'aabb', open: false),
+    ];
+
+    SyncMessage deskMessage({List<DeskEntry> list = entries}) => SyncMessage(
+      type: SyncMessageType.desk,
+      roomHash: SyncMessage.hashRoomCode(room),
+      senderId: 'aabb',
+      senderName: 'החברותא',
+      timestampMs: DateTime.now().millisecondsSinceEpoch,
+      sequence: 3,
+      entries: list,
+    );
+
+    test('הלוך ושוב שומר על הפריטים ועל החותמות', () {
+      final decoded = SyncMessage.decode(deskMessage().encode(room), room);
+      expect(decoded, isNotNull);
+      expect(decoded!.type, SyncMessageType.desk);
+      expect(decoded.entries.map((e) => e.bookId), ['ברכות', 'רש"י על בראשית']);
+      expect(decoded.entries.first.index, 12);
+      expect(decoded.entries.first.open, isTrue);
+      expect(decoded.entries.last.open, isFalse, reason: 'סגירה עוברת על החוט');
+      expect(decoded.entries.last.stamp, 701);
+      expect(decoded.entries.last.by, 'aabb');
+    });
+
+    test('הודעת שולחן בלי אף פריט תקין נדחית', () {
+      expect(
+        SyncMessage.decode(deskMessage(list: const []).encode(room), room),
+        isNull,
+      );
+    });
+
+    test('הודעת מיקום אינה נושאת שדה שולחן כלל', () {
+      // זו ההבטחה שמחזיקה תאימות אחורה: המפתח `desk` אינו נכנס לצורה
+      // הקנונית של הודעת מיקום, ולכן הבייטים שנחתמים זהים לאלה של גרסה
+      // שאינה מכירה שולחן בכלל. מפתח שהיה נוסף תמיד היה הופך כל הודעת
+      // מיקום לחתומה אחרת, ומתאם שלא שודרג היה דוחה את כולן.
+      final wire = jsonDecode(utf8.decode(buildMessage().encode(room))) as Map;
+      expect(wire.containsKey('desk'), isFalse);
+    });
+
+    test('הודעה עם יותר פריטים ממנה אחת נזרקת', () {
+      // שולח תקין מפצל למנות; רשימה ארוכה מזה אינה באה מאיתנו. הזריקה
+      // כאן היא גם מה שמונע חיתוך שקט — הודעה חתוכה הייתה נכשלת בהמשך
+      // באימות החתימה ממילא, בלי שאפשר יהיה לומר למה.
+      final many = [
+        for (var i = 0; i <= maxTabsPerMessage; i++)
+          DeskEntry(bookId: 'ספר $i', stamp: 1, by: 'aabb'),
+      ];
+      expect(SyncMessage.decode(deskMessage(list: many).encode(room), room), isNull);
+    });
+
+    test('כפילויות ועודף נחתכים בקריאת רשימה', () {
+      final raw = [
+        for (var i = 0; i < maxTrackedTabs + 10; i++)
+          {'b': 'ספר $i', 's': 1, 'w': 'x'},
+        {'b': 'ספר 0', 's': 2, 'w': 'x'},
+        {'b': '', 's': 1, 'w': 'x'},
+        {'b': 'בלי חותמת', 'w': 'x'},
+        'לא אובייקט',
+      ];
+      final list = DeskEntry.listFromJson(raw);
+      expect(list, hasLength(maxTrackedTabs));
+      expect(list.map((e) => e.bookId).toSet(), hasLength(maxTrackedTabs));
+    });
+
+    test('הכרעה בין שתי פעולות על אותו ספר', () {
+      const early = DeskEntry(bookId: 'ברכות', stamp: 10, by: 'bbbb');
+      const later = DeskEntry(bookId: 'ברכות', stamp: 11, by: 'aaaa', open: false);
+      expect(early.supersededBy(later), isTrue, reason: 'המאוחרת מנצחת');
+      expect(later.supersededBy(early), isFalse);
+
+      // תיקו נשבר לפי מזהה המכשיר, כדי ששני הצדדים יגיעו לאותה תוצאה.
+      const tieA = DeskEntry(bookId: 'ברכות', stamp: 10, by: 'aaaa');
+      const tieB = DeskEntry(bookId: 'ברכות', stamp: 10, by: 'bbbb');
+      expect(tieA.supersededBy(tieB), isTrue);
+      expect(tieB.supersededBy(tieA), isFalse);
+    });
+  });
 }

@@ -15,6 +15,7 @@ SyncMessage incoming({
   String senderName = 'החברותא',
   int sequence = 1,
   int? timestampMs,
+  List<DeskEntry> entries = const [],
 }) => SyncMessage(
   type: type,
   roomHash: SyncMessage.hashRoomCode('חדר'),
@@ -23,6 +24,7 @@ SyncMessage incoming({
   timestampMs: timestampMs ?? DateTime.now().millisecondsSinceEpoch,
   sequence: sequence,
   location: location,
+  entries: entries,
 );
 
 void main() {
@@ -430,6 +432,364 @@ void main() {
       final engine = hub.snapshot()['engine'] as Map;
       expect(engine['owner'], 'background:x');
       expect(engine['ageMs'], 0);
+    });
+  });
+
+  group('השולחן המשותף', () {
+    List<SyncMessage> deskMessages() =>
+        transport.sent.where((m) => m.type == SyncMessageType.desk).toList();
+
+    List<DeskEntry> broadcastEntries() =>
+        deskMessages().expand((m) => m.entries).toList();
+
+    List<String> broadcastBooks() =>
+        broadcastEntries().map((e) => e.bookId).toList();
+
+    DeskEntry local(String bookId, {int index = 0}) =>
+        DeskEntry(bookId: bookId, index: index, stamp: 0, by: '');
+
+    /// חותמת של החברותא שגוברת על מה שנקבע כאן.
+    ///
+    /// שני הצדדים חותמים לפי שעון, ולכן חותמת קטנה שרירותית הייתה
+    /// מפסידה לכל פעולה מקומית — ובדיקה כזאת הייתה בודקת את ההפך ממה
+    /// שהיא מתיימרת לבדוק.
+    int remoteStamp([int offset = 0]) =>
+        now.millisecondsSinceEpoch + 60000 + offset;
+
+    SyncMessage deskFrom(
+      List<DeskEntry> entries, {
+      int sequence = 1,
+    }) => incoming(
+      type: SyncMessageType.desk,
+      location: null,
+      sequence: sequence,
+      entries: entries,
+    );
+
+    /// דיווח ראשון קובע קו בסיס ואינו משתף כלום — ראו `_sawFirstReport`.
+    Future<void> baseline([List<DeskEntry> tabs = const []]) async {
+      await hub.publishLocalDesk(tabs, canClose: true);
+      transport.sent.clear();
+    }
+
+    test('הדיווח הראשון אינו משתף דבר, והוא מציע להעביר', () async {
+      // ספר שכבר היה פתוח כשהתחברת אינו "ספר שנפתח עכשיו". השולחן
+      // המשותף מתחיל ריק, והמשתמש בוחר מה להעביר אליו.
+      expect(await hub.publishLocalDesk([local('ברכות')]), 0);
+      expect(deskMessages(), isEmpty);
+      expect(hub.carryCandidates().map((e) => e.bookId), ['ברכות']);
+    });
+
+    test('ספר שנפתח אחרי החיבור מצטרף לשולחן מעצמו', () async {
+      await baseline([local('ברכות')]);
+
+      expect(
+        await hub.publishLocalDesk([local('ברכות'), local('שבת', index: 5)]),
+        1,
+      );
+      expect(broadcastBooks(), ['שבת']);
+      expect(broadcastEntries().single.open, isTrue);
+      expect(broadcastEntries().single.index, 5);
+    });
+
+    test('העברה יזומה משתפת ספר שכבר היה פתוח', () async {
+      await baseline([local('ברכות'), local('שבת')]);
+
+      expect(await hub.carryToDesk(['ברכות']), 1);
+      expect(broadcastBooks(), ['ברכות']);
+      expect(hub.carryCandidates().map((e) => e.bookId), ['שבת']);
+    });
+
+    test('אי אפשר להעביר ספר שאינו פתוח כאן', () async {
+      await baseline([local('ברכות')]);
+      expect(await hub.carryToDesk(['ספר שאינו פתוח']), 0);
+      expect(deskMessages(), isEmpty);
+    });
+
+    test('ספר שנסגר כאן משודר כסגירה', () async {
+      await baseline();
+      await hub.publishLocalDesk([local('ברכות')]);
+      transport.sent.clear();
+
+      expect(await hub.publishLocalDesk(const []), 1);
+      final closed = broadcastEntries().single;
+      expect(closed.bookId, 'ברכות');
+      expect(closed.open, isFalse);
+    });
+
+    test('ספר שמעולם לא היה פתוח כאן אינו מדווח כסגירה', () async {
+      // זו הנקודה העדינה: החברותא פתחה ספר שאינו בספרייה שלנו, ולכן הוא
+      // אינו ברשימה המקומית. דיווח שלו כסגירה היה מוחק מהשולחן דווקא את
+      // מה שהיא פתחה.
+      await baseline();
+      await transport.deliver(
+        deskFrom([const DeskEntry(bookId: 'ספר נדיר', stamp: 900, by: 'חברותא')]),
+      );
+      transport.sent.clear();
+
+      expect(await hub.publishLocalDesk(const []), 0);
+      expect(deskMessages(), isEmpty);
+    });
+
+    test('רשימה ארוכה נשלחת במנות, כדי לא להתפצל ברמת ה-IP', () async {
+      await baseline();
+      final many = [
+        for (var i = 0; i < maxTabsPerMessage * 2 + 3; i++) local('ספר $i'),
+      ];
+      await hub.publishLocalDesk(many);
+
+      expect(deskMessages(), hasLength(3));
+      for (final message in deskMessages()) {
+        expect(message.entries.length, lessThanOrEqualTo(maxTabsPerMessage));
+      }
+      expect(broadcastBooks(), hasLength(many.length));
+    });
+
+    test('תוכנית: מה לפתוח ומה לסגור', () async {
+      await baseline([local('ברכות')]);
+      await hub.carryToDesk(['ברכות']);
+
+      await transport.deliver(
+        deskFrom([
+          DeskEntry(bookId: 'שבת', index: 3, stamp: remoteStamp(), by: 'חברותא'),
+          DeskEntry(bookId: 'ברכות', stamp: remoteStamp(1), by: 'חברותא', open: false),
+        ]),
+      );
+
+      final plan = hub.deskPlan();
+      expect(plan.open.map((e) => e.bookId), ['שבת']);
+      expect(plan.open.single.index, 3);
+      expect(plan.close.map((e) => e.bookId), ['ברכות']);
+    });
+
+    test('בלי יכולת סגירה בצד התוסף אין סגירות בתוכנית', () async {
+      // אחרת התוכנית לא הייתה מתרוקנת לעולם, ו-`/events` לא היה נכנס
+      // להמתנה — לולאה עמוסה במקום סנכרון.
+      await hub.publishLocalDesk([local('ברכות')], canClose: false);
+      await hub.carryToDesk(['ברכות']);
+      await transport.deliver(
+        deskFrom([
+          DeskEntry(bookId: 'ברכות', stamp: remoteStamp(), by: 'חברותא', open: false),
+        ]),
+      );
+
+      expect(hub.deskPlan().close, isEmpty);
+      expect(hub.hasDeskWork, isFalse);
+    });
+
+    test('מדיניות "לא לסגור" מוציאה סגירות מהתוכנית', () async {
+      await baseline([local('ברכות')]);
+      await hub.carryToDesk(['ברכות']);
+      await hub.setClosePolicy(ClosePolicy.never);
+      await transport.deliver(
+        deskFrom([
+          DeskEntry(bookId: 'ברכות', stamp: remoteStamp(), by: 'חברותא', open: false),
+        ]),
+      );
+
+      expect(hub.deskPlan().close, isEmpty);
+    });
+
+    test('"להשאיר פתוח" אינו פותח את הספר מחדש אצל החברותא', () async {
+      // הבאג שהמודל הזה נועד למנוע: הספר פתוח כאן בזמן שהשולחן אומר
+      // "סגור", והסריקה הבאה הייתה מפרשת את הפער כפתיחה חדשה.
+      await baseline([local('ברכות')]);
+      await hub.carryToDesk(['ברכות']);
+      await transport.deliver(
+        deskFrom([
+          DeskEntry(bookId: 'ברכות', stamp: remoteStamp(), by: 'חברותא', open: false),
+        ]),
+      );
+      hub.dismissClose('ברכות');
+      transport.sent.clear();
+
+      expect(await hub.publishLocalDesk([local('ברכות')]), 0);
+      expect(deskMessages(), isEmpty);
+      expect(hub.deskPlan().close, isEmpty, reason: 'והשאלה אינה חוזרת');
+    });
+
+    test('ספר שלא נפתח כאן אינו מוצע שוב', () async {
+      await baseline();
+      await transport.deliver(
+        deskFrom([const DeskEntry(bookId: 'ספר נדיר', stamp: 900, by: 'חברותא')]),
+      );
+      expect(hub.deskPlan().open.map((e) => e.bookId), ['ספר נדיר']);
+
+      await hub.publishLocalDesk(const [], failed: const ['ספר נדיר']);
+      expect(hub.deskPlan().open, isEmpty);
+      expect(hub.hasDeskWork, isFalse);
+    });
+
+    test('מיזוג לפי חותמת: המאוחרת מנצחת, בלי תלות בסדר ההגעה', () async {
+      await baseline();
+      await transport.deliver(
+        deskFrom([
+          DeskEntry(bookId: 'ברכות', stamp: remoteStamp(), by: 'חברותא', open: false),
+        ]),
+      );
+      // הודעה ישנה יותר שהגיעה באיחור אינה מחזירה את הגלגל.
+      await transport.deliver(
+        deskFrom([
+          const DeskEntry(bookId: 'ברכות', stamp: 800, by: 'חברותא'),
+        ], sequence: 2),
+      );
+
+      expect(hub.deskPlan().open, isEmpty);
+      expect(hub.snapshot()['deskCount'], 0);
+    });
+
+    test('חותמת מקומית גוברת על שעון של חברותא שרץ קדימה', () async {
+      // בלי השעון הלוגי, מחשב שהשעון שלו מקדים בדקות היה מנצח כל
+      // הכרעה — וכל ספר שהוא סגר היה נסגר שוב ושוב אצל השני.
+      await baseline();
+      final future = now.millisecondsSinceEpoch + 240000;
+      await transport.deliver(
+        deskFrom([
+          DeskEntry(bookId: 'ברכות', stamp: future, by: 'חברותא', open: false),
+        ]),
+      );
+
+      await hub.carryToDesk(['ברכות']);
+      await hub.publishLocalDesk([local('ברכות')]);
+      await hub.carryToDesk(['ברכות']);
+
+      final mine = broadcastEntries().where((e) => e.bookId == 'ברכות');
+      expect(mine, isNotEmpty, reason: 'ההעברה שלי יצאה');
+      expect(mine.last.stamp, greaterThan(future));
+    });
+
+    test('חברותא שהצטרפה מקבלת את השולחן כולו', () async {
+      await baseline([local('ברכות')]);
+      await hub.carryToDesk(['ברכות']);
+      transport.sent.clear();
+
+      await transport.deliver(incoming(
+        type: SyncMessageType.presence,
+        location: null,
+        senderId: 'מכשיר-חדש',
+      ));
+
+      expect(broadcastBooks(), ['ברכות']);
+    });
+
+    test('יציאה מהחברותא מוחקת את השולחן', () async {
+      await baseline([local('ברכות')]);
+      await hub.carryToDesk(['ברכות']);
+      await hub.setRoom(null);
+
+      expect(hub.snapshot()['deskCount'], 0);
+      expect(hub.hasDeskWork, isFalse);
+    });
+
+    test('ה-snapshot מדווח את מצב השולחן וההעדפות', () async {
+      await baseline([local('ברכות')]);
+      await hub.carryToDesk(['ברכות']);
+
+      final snapshot = hub.snapshot();
+      expect(snapshot['deskCount'], 1);
+      expect(snapshot['localTabCount'], 1);
+      expect(snapshot['syncLocation'], isTrue);
+      expect(snapshot['closePolicy'], 'ask');
+      expect(snapshot['canClose'], isTrue);
+    });
+
+    test('כיבוי מקום הלימוד עוצר את שידור המיקום, ולא את השולחן', () async {
+      await hub.setSyncLocation(false);
+      expect(
+        await hub.publishLocal(const SyncLocation(bookId: 'שבת', index: 5)),
+        isFalse,
+      );
+      expect(
+        transport.sent.where((m) => m.type == SyncMessageType.location),
+        isEmpty,
+      );
+      // אבל המיקום המקומי נשמר, כדי שהלשונית תמשיך להראות "המקום שלי".
+      expect(hub.snapshot()['localLocation'], isNotNull);
+
+      await baseline();
+      await hub.publishLocalDesk([local('ברכות')]);
+      expect(broadcastBooks(), ['ברכות'], reason: 'השולחן ממשיך לעבוד');
+    });
+  });
+
+  group('שני מתאמים מתכנסים', () {
+    late TempConfig otherTemp;
+    late CompanionConfig otherConfig;
+    late FakeTransport otherTransport;
+    late SyncHub other;
+
+    setUp(() async {
+      otherTemp = await TempConfig.create();
+      otherConfig = CompanionConfig(
+        deviceId: 'ffee0011',
+        deviceName: 'המחשב השני',
+        roomCode: 'חדר',
+        storageDir: otherTemp.dir,
+      );
+      otherTransport = FakeTransport();
+      other = SyncHub(config: otherConfig, transport: otherTransport);
+    });
+
+    tearDown(() async {
+      await other.dispose();
+      await otherTemp.delete();
+    });
+
+    /// מעביר כל מה ששודר מ-[from] אל הצד השני, כמו broadcast ברשת.
+    Future<void> flush(FakeTransport from, FakeTransport to) async {
+      final pending = List<SyncMessage>.from(from.sent);
+      from.sent.clear();
+      for (final message in pending) {
+        await to.deliver(message);
+      }
+    }
+
+    DeskEntry local(String bookId) =>
+        DeskEntry(bookId: bookId, stamp: 0, by: '');
+
+    test('פתיחה, סגירה, והכל מתכנס בלי הד', () async {
+      // קו בסיס בשני הצדדים, ואז העברה מפורשת לשולחן.
+      await hub.publishLocalDesk([local('ברכות')], canClose: true);
+      await other.publishLocalDesk(const [], canClose: true);
+      transport.sent.clear();
+      otherTransport.sent.clear();
+
+      await hub.carryToDesk(['ברכות']);
+      await flush(transport, otherTransport);
+
+      // הצד השני מתבקש לפתוח, פותח, ומדווח.
+      expect(other.deskPlan().open.map((e) => e.bookId), ['ברכות']);
+      await other.publishLocalDesk([local('ברכות')], canClose: true);
+      expect(
+        otherTransport.sent.where((m) => m.type == SyncMessageType.desk),
+        isEmpty,
+        reason: 'ספר שבא ממנו אינו חוזר אליו',
+      );
+
+      // עכשיו הוא סוגר אותו, והסגירה עוברת בכיוון ההפוך.
+      await other.publishLocalDesk(const [], canClose: true);
+      expect(
+        otherTransport.sent
+            .where((m) => m.type == SyncMessageType.desk)
+            .expand((m) => m.entries)
+            .single
+            .open,
+        isFalse,
+      );
+      await flush(otherTransport, transport);
+
+      expect(hub.deskPlan().close.map((e) => e.bookId), ['ברכות']);
+
+      // וכשהצד הראשון סוגר בפועל, שני השולחנות זהים ואיש אינו משדר עוד.
+      transport.sent.clear();
+      await hub.publishLocalDesk(const [], canClose: true);
+      expect(
+        transport.sent.where((m) => m.type == SyncMessageType.desk),
+        isEmpty,
+        reason: 'הסגירה כבר בשולחן — אין מה להודיע',
+      );
+      expect(hub.hasDeskWork, isFalse);
+      expect(other.hasDeskWork, isFalse);
     });
   });
 }

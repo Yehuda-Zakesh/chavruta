@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'config.dart';
 import 'protocol.dart';
 import 'startup_registration.dart';
 import 'sync_hub.dart';
@@ -108,6 +109,14 @@ class LocalApi {
           await _handleEvents(request);
         case 'POST /publish':
           await _handlePublish(request);
+        case 'POST /tabs':
+          await _handleTabs(request);
+        case 'POST /desk/carry':
+          await _handleDeskCarry(request);
+        case 'POST /desk/dismiss':
+          await _handleDeskDismiss(request);
+        case 'POST /settings':
+          await _handleSettings(request);
         case 'POST /room':
           await _handleRoom(request);
         case 'POST /name':
@@ -169,7 +178,7 @@ class LocalApi {
     // לומד שהמנוע בידיו רק בתום ההמתנה הארוכה — עד 25 שניות שבהן הוא
     // מחזיק את ההחזקה אך אינו מאזין לשינויי מקום ואינו מדווח כלום. זה
     // בדיוק הרגע הרגיש: מיד אחרי שמופע הרקע נדם והלשונית נכנסה במקומו.
-    if (heldBefore && hub.remoteSequence <= since) {
+    if (heldBefore && hub.remoteSequence <= since && !hub.hasDeskWork) {
       await hub.waitForChange(longPollTimeout);
       // **חובה לבדוק את ההחזקה שוב, ולכבד את התוצאה.** ההמתנה כאן ארוכה
       // (25 שניות), ובתוכה מופע הרקע יכול לעלות ולקחת את המנוע. תשובה
@@ -186,6 +195,12 @@ class LocalApi {
         return;
       }
     }
+
+    // תוכנית השולחן נמסרת רק למי שמריץ את המנוע; מופע שאינו המחזיק חזר
+    // כבר למעלה. היא **נגזרת ואינה תור** (ראו [SyncHub.deskPlan]): תשובה
+    // שאבדה בדרך אינה מאבדת פעולה, והפעולה נעלמת מהתוכנית מאליה ברגע
+    // שהתוסף מדווח שהיא בוצעה.
+    final plan = hub.deskPlan();
 
     final snapshot = hub.snapshot();
     final sequence = snapshot['remoteSequence'] as int;
@@ -206,6 +221,10 @@ class LocalApi {
     await _respondJson(request, {
       'hasUpdate': hasUpdate,
       'engineMine': true,
+      'desk': {
+        'open': plan.open.map((e) => e.toJson()).toList(),
+        'close': plan.close.map((e) => e.toJson()).toList(),
+      },
       ...snapshot,
     });
   }
@@ -226,6 +245,143 @@ class LocalApi {
     if (instance is String && instance.isNotEmpty) hub.claimEngine(instance);
     final broadcast = await hub.publishLocal(location);
     await _respondJson(request, {'broadcast': broadcast, ...hub.snapshot()});
+  }
+
+  /// דיווח על הספרים הפתוחים באוצריא כאן.
+  ///
+  /// הגוף:
+  /// ```json
+  /// {
+  ///   "instance": "background",
+  ///   "tabs": [{"b": "ברכות", "i": 4}],
+  ///   "canClose": false,
+  ///   "failed": ["ספר שאינו בספרייה"]
+  /// }
+  /// ```
+  ///
+  /// זו **תמונת מצב מלאה** ולא רשימת חדשים: לאוצריא אין אירוע "נפתח
+  /// טאב", התוסף סורק, וההפרש — פתיחות וסגירות גם יחד — מחושב במתאם
+  /// (ראו [SyncHub.publishLocalDesk]).
+  ///
+  /// רשימה ריקה היא דיווח תקין — "אין כאן ספרים פתוחים" — ולכן היא
+  /// נבדלת מגוף חסר, שהוא 400.
+  Future<void> _handleTabs(HttpRequest request) async {
+    final body = await _readJsonBody(request);
+    final raw = body is Map ? body['tabs'] : null;
+    if (raw is! List) {
+      await _respondJson(request, {
+        'error': 'tabs must be an array',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
+    // דיווח שולחן הוא סימן חיים של המנוע, בדיוק כמו `/publish`.
+    final instance = body is Map ? body['instance'] : null;
+    if (instance is String && instance.isNotEmpty) hub.claimEngine(instance);
+
+    final rawFailed = body is Map ? body['failed'] : null;
+    final broadcast = await hub.publishLocalDesk(
+      _localEntries(raw),
+      canClose: body is Map && body['canClose'] == true,
+      failed: rawFailed is List ? rawFailed.whereType<String>() : const [],
+    );
+    await _respondJson(request, {'broadcast': broadcast, ...hub.snapshot()});
+  }
+
+  /// ממיר את דיווח התוסף לפריטי שולחן.
+  ///
+  /// החותמת והבעלות נקבעות במתאם ולא בתוסף — הוא מדווח **עובדה**
+  /// ("הספר הזה פתוח כאן"), והמתאם הוא שמחליט אם זו פעולה חדשה.
+  static List<DeskEntry> _localEntries(List raw) {
+    final seen = <String>{};
+    final entries = <DeskEntry>[];
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final bookId = item['b'];
+      if (bookId is! String || bookId.isEmpty || !seen.add(bookId)) continue;
+      final index = item['i'];
+      entries.add(
+        DeskEntry(
+          bookId: bookId,
+          index: index is int && index >= 0 ? index : 0,
+          stamp: 0,
+          by: '',
+        ),
+      );
+      if (entries.length >= maxTrackedTabs) break;
+    }
+    return entries;
+  }
+
+  /// העברת ספרים שפתוחים כאן אל השולחן המשותף, לפי בחירת המשתמש.
+  ///
+  /// הגוף הוא `{"bookIds": ["ברכות", "שבת"]}`. "העברת הכול" היא פשוט
+  /// כל המועמדים שהלשונית קיבלה ב-`carryCandidates`.
+  Future<void> _handleDeskCarry(HttpRequest request) async {
+    final body = await _readJsonBody(request);
+    final raw = body is Map ? body['bookIds'] : null;
+    if (raw is! List) {
+      await _respondJson(request, {
+        'error': 'bookIds must be an array',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
+    final carried = await hub.carryToDesk(raw.whereType<String>());
+    await _respondJson(request, {'carried': carried, ...hub.snapshot()});
+  }
+
+  /// המשתמש ענה "לא" על שאלת סגירה. ראו [SyncHub.dismissClose].
+  Future<void> _handleDeskDismiss(HttpRequest request) async {
+    final body = await _readJsonBody(request);
+    final bookId = body is Map ? body['bookId'] : null;
+    if (bookId is! String || bookId.isEmpty) {
+      await _respondJson(request, {
+        'error': 'bookId is required',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
+    hub.dismissClose(bookId);
+    await _respondJson(request, hub.snapshot());
+  }
+
+  /// שינוי העדפות הסנכרון: מקום הלימוד, ומדיניות הסגירה.
+  ///
+  /// ההעדפות יושבות במתאם ולא בזיכרון התוסף, כי שני מופעי התוסף צריכים
+  /// לראות אותן — ראו [CompanionConfig].
+  Future<void> _handleSettings(HttpRequest request) async {
+    final body = await _readJsonBody(request);
+    if (body is! Map) {
+      await _respondJson(request, {
+        'error': 'syncLocation or closePolicy is required',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
+
+    if (body.containsKey('syncLocation')) {
+      final value = body['syncLocation'];
+      if (value is! bool) {
+        await _respondJson(request, {
+          'error': 'syncLocation must be a boolean',
+        }, status: HttpStatus.badRequest);
+        return;
+      }
+      await hub.setSyncLocation(value);
+    }
+
+    if (body.containsKey('closePolicy')) {
+      final value = body['closePolicy'];
+      // ערך לא מוכר אינו נופל בשקט לברירת המחדל: מדיניות סגירה שגויה
+      // היא בדיוק הסוג של טעות שאסור לגלות רק כשספר נסגר.
+      if (value is! String ||
+          !ClosePolicy.values.any((policy) => policy.wire == value)) {
+        await _respondJson(request, {
+          'error': 'closePolicy must be one of ask, always, never',
+        }, status: HttpStatus.badRequest);
+        return;
+      }
+      await hub.setClosePolicy(ClosePolicy.fromWire(value));
+    }
+
+    await _respondJson(request, hub.snapshot());
   }
 
   /// מופע התוסף מודיע שהוא מפסיק לסנכרן, כדי שהמופע האחר ייכנס מיד.
