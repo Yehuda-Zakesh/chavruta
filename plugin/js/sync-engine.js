@@ -152,8 +152,15 @@ const SyncEngine = (function () {
     };
   }
 
+  /**
+   * המקום שאנחנו בו עכשיו.
+   *
+   * דרך [callWithTimeout] ולא ישירות: זו הקריאה הראשונה בכל מסלול כאן —
+   * `setOwner`, `applyDeskPlan`, `applyRemote` — ולכן קריאה שאינה חוזרת
+   * ממנה תוקעת את הלולאה כולה, וההחזקה על המנוע פגה בלי שאיש ידע למה.
+   */
   async function currentLocation() {
-    const res = await Otzaria.call('reader.getCurrentRef');
+    const res = await callWithTimeout('reader.getCurrentRef');
     return res && res.success ? toLocation(res.data) : null;
   }
   function setStatus(next) {
@@ -387,7 +394,7 @@ const SyncEngine = (function () {
 
     if (carry.length === 0) return;
     try {
-      await Otzaria.call('storage.set', {
+      await callWithTimeout('storage.set', {
         key: CARRY_KEY,
         value: carry.map(function (book) {
           return { b: book.b, i: book.i };
@@ -563,15 +570,27 @@ const SyncEngine = (function () {
     if (toOpen.length === 0 && toClose.length === 0) return;
     if (!(await inDeskWorkspace())) return;
 
-    const before = await currentLocation();
+    // כישלון בקריאת המקום הנוכחי אינו מבטל את התוכנית — הוא רק מוותר על
+    // החזרה אליו בסוף. ראו [currentLocation]: היא מוגבלת בזמן ולכן יכולה
+    // להיכשל, ובלי התפיסה כאן פתיחת ספרים הייתה נופלת יחד איתה.
+    let before = null;
+    try {
+      before = await currentLocation();
+    } catch (e) {
+      before = null;
+    }
     let changed = false;
 
     for (let i = 0; i < toOpen.length; i++) {
       const entry = toOpen[i];
       if (!entry || typeof entry.b !== 'string' || entry.b === '') continue;
+      // ההחזקה נבדקת **לפני כל פתיחה**, ולא רק בכניסה: הפתיחות כאן הן
+      // רצף של המתנות, ומופע שאיבד את המנוע באמצע אינו אמור להמשיך
+      // לפתוח ספרים על המסך של מי שכן מחזיק אותו.
+      if (!owner || !running) return;
       let opened = false;
       try {
-        const res = await Otzaria.call('reader.openBook', {
+        const res = await callWithTimeout('reader.openBook', {
           bookId: entry.b,
           index: typeof entry.i === 'number' ? entry.i : 0,
         });
@@ -603,7 +622,7 @@ const SyncEngine = (function () {
 
     if (changed && before) {
       try {
-        await Otzaria.call('reader.openBook', {
+        await callWithTimeout('reader.openBook', {
           bookId: before.bookId,
           index: before.index,
           navigateToPositionIfReused: true,
@@ -740,14 +759,24 @@ const SyncEngine = (function () {
       return;
     }
 
-    const here = await currentLocation();
+    // אם לא הצלחנו לקרוא איפה אנחנו, ממשיכים לניווט: המטרה כאן היא
+    // להגיע למקום שהחברותא בו, והבדיקה היא קיצור דרך בלבד.
+    let here = null;
+    try {
+      here = await currentLocation();
+    } catch (e) {
+      here = null;
+    }
     if (here && here.bookId === location.bookId && here.index === location.index) {
       return;
     }
+    // ההמתנה שקדמה עשויה הייתה לעבור את ההחזקה למופע אחר. ניווט הוא
+    // הפעולה הגלויה ביותר כאן, ואסור לה לצאת ממופע שאינו המנוע.
+    if (!owner || !running) return;
 
     let opened = false;
     try {
-      const res = await Otzaria.call('reader.openBook', {
+      const res = await callWithTimeout('reader.openBook', {
         bookId: location.bookId,
         index: typeof location.index === 'number' ? location.index : 0,
         navigateToPositionIfReused: true,

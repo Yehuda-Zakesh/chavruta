@@ -21,6 +21,21 @@ class _MangledReg extends FakeReg {
   }
 }
 
+/// `reg.exe` שמסרב לכתוב ומחזיר קוד יציאה 5 (גישה נדחתה) — מדיניות
+/// ארגונית, כלי אבטחה, או הרשאות. הערך שכבר ברישום נשאר כמות שהוא.
+class _RefusingAdd extends FakeReg {
+  _RefusingAdd({super.value});
+
+  @override
+  Future<ProcessResult> run(List<String> arguments) async {
+    if (arguments.isNotEmpty && arguments.first == 'add') {
+      calls.add(arguments);
+      return ProcessResult(0, 5, '', 'ERROR: Access is denied.');
+    }
+    return super.run(arguments);
+  }
+}
+
 void main() {
   group('StartupRegistration', () {
     late Directory dir;
@@ -145,6 +160,32 @@ void main() {
 
       expect(state.enabled, isFalse);
       expect(state.reason, isNotNull);
+    });
+
+    test('reg add שנכשל אינו מדווח הצלחה בגלל רשומה ישנה', () async {
+      // התקנה קודמת בתיקייה אחרת השאירה ערך באותו שם, ולכן `read` רואה
+      // "עולה עם המחשב" גם כשהכתיבה החדשה נדחתה. קוד היציאה הוא הראיה
+      // היחידה כאן, ובלעדיו המשתמש קיבל אישור על פעולה שלא קרתה.
+      final reg = _RefusingAdd(
+        value: r'"C:\Old\ChavrutaCompanion.exe" --hidden',
+      );
+      final state = await subject(reg).setEnabled(true);
+
+      expect(state.supported, isTrue);
+      expect(state.enabled, isFalse);
+      expect(state.reason, contains('5'), reason: 'קוד היציאה נאמר');
+      expect(reg.value, r'"C:\Old\ChavrutaCompanion.exe" --hidden');
+    });
+
+    test('reg add שנכשל כשהערך הנכון כבר רשום אינו מדווח כשל', () async {
+      // המתקין כבר כתב בדיוק את מה שביקשנו לכתוב. אין מה לתקן, ואין
+      // סיבה להפחיד את המשתמש.
+      final wanted = '"$companion" --hidden';
+      final reg = _RefusingAdd(value: wanted);
+      final state = await subject(reg).setEnabled(true);
+
+      expect(state.enabled, isTrue);
+      expect(state.reason, isNull);
     });
 
     test('הרצה מתוך פיתוח אינה נתמכת, ואינה נוגעת ברישום', () async {

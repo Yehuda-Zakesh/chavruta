@@ -263,9 +263,20 @@ var
 begin
   if not RegValueExists(HKCU, StateKey, FirewallFlag) then exit;
 
+  { המחיקה, ואחריה **אימות** שהחוקים באמת נעלמו.
+
+    קוד היציאה של המחיקה לבדה אינו אומר דבר: netsh מחזיר 1 גם על חוק
+    שכבר אינו קיים, כלומר בדיוק המצב שרצינו. השאלה היחידה שמעניינת היא
+    אם נשאר חוק, ולכן שואלים אותה ישירות — `show rule` שמצליח פירושו
+    שהחוק עדיין שם, ואז יוצאים עם 1. }
   Cmd :=
     '/c netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-In)" >nul 2>&1' +
-    ' & netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-Out)" >nul 2>&1';
+    ' & netsh advfirewall firewall delete rule name="Chavruta Companion (UDP-Out)" >nul 2>&1' +
+    ' & netsh advfirewall firewall show rule name="Chavruta Companion (UDP-In)" >nul 2>&1' +
+    ' & if not errorlevel 1 exit /b 1' +
+    ' & netsh advfirewall firewall show rule name="Chavruta Companion (UDP-Out)" >nul 2>&1' +
+    ' & if not errorlevel 1 exit /b 1' +
+    ' & exit /b 0';
 
   if IsAdmin then
     Verb := 'open'
@@ -281,7 +292,22 @@ begin
     Verb := 'runas';
   end;
 
-  ShellExec(Verb, ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  { **הדגל נמחק רק כשהחוקים באמת נעלמו.** הדגל הוא הדבר היחיד שיודע
+    שיש מה לנקות, ומחיקתו אחרי ניקוי שנכשל — UAC שנדחה, netsh חסום —
+    הייתה משאירה במערכת חוקי חומת אש שמצביעים לתוכנית שכבר אינה קיימת,
+    בלי שאיש יידע עליהם ובלי שהתקנה הבאה תנסה שוב. }
+  if (not ShellExec(Verb, ExpandConstant('{cmd}'), Cmd, '', SW_HIDE,
+                    ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+  begin
+    if not UninstallSilent then
+      MsgBox(
+        'חוקי חומת האש של החברותא לא הוסרו.' + #13#10#13#10 +
+        'אפשר להסיר אותם ידנית ב"חומת האש של Windows Defender", ' +
+        'או להריץ את ההסרה שוב עם הרשאות מנהל.',
+        mbInformation, MB_OK);
+    exit;
+  end;
+
   RegDeleteValue(HKCU, StateKey, FirewallFlag);
   RegDeleteKeyIfEmpty(HKCU, StateKey);
 end;

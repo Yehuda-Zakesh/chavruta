@@ -178,6 +178,40 @@ void main() {
       expect(json.containsKey('roomCode'), isFalse);
     });
 
+    test('שמירות מקבילות אינן מאבדות שדה ואינן משאירות קובץ פגום', () async {
+      // שתי בקשות שהגיעו כמעט יחד — שינוי חדר ושינוי שם — כל אחת
+      // קוראת ל-save() בלי להמתין לשנייה.
+      final config = temp.config();
+      config.roomCode = 'דף יומי';
+      final first = config.save();
+      config.deviceName = 'המחשב של אבא';
+      config.syncLocation = false;
+      final second = config.save();
+      await Future.wait([first, second]);
+
+      final json = jsonDecode(await config.file.readAsString()) as Map;
+      expect(json['roomCode'], 'דף יומי');
+      expect(json['deviceName'], 'המחשב של אבא');
+      expect(json['syncLocation'], isFalse);
+      expect(json['deviceId'], config.deviceId);
+    });
+
+    test('הקובץ הזמני אינו נשאר אחרי שמירה', () async {
+      // הכתיבה היא לקובץ זמני ואז החלפה בשם. שארית כאן פירושה שההחלפה
+      // לא קרתה, כלומר גם שהאטומיות לא קרתה.
+      final config = temp.config(roomCode: 'דף יומי');
+      await config.save();
+      expect(await File('${config.file.path}.tmp').exists(), isFalse);
+    });
+
+    test('מה שנשמר נקרא בחזרה שלם — זהות וחדר גם יחד', () async {
+      final config = temp.config(roomCode: 'דף יומי');
+      await config.save();
+      final again = await CompanionConfig.load(storageDir: temp.dir);
+      expect(again.deviceId, config.deviceId);
+      expect(again.roomCode, 'דף יומי');
+    });
+
     test('התיקייה נוצרת אם אינה קיימת', () async {
       final nested = Directory(
         '${temp.dir.path}${Platform.pathSeparator}a'

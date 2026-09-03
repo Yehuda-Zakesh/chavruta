@@ -131,7 +131,8 @@ class StartupRegistration {
 
     try {
       if (value) {
-        await _runReg([
+        final wanted = await _startupCommand();
+        final result = await _runReg([
           'add',
           startupRunKey,
           '/v',
@@ -139,12 +140,21 @@ class StartupRegistration {
           '/t',
           'REG_SZ',
           '/d',
-          await _startupCommand(),
+          wanted,
           '/f',
         ]);
+        // **כתיבה שנכשלה אינה נמדדת לפי מה שיש ברישום.** רשומה בשם הזה
+        // מהתקנה קודמת נשארת שם, ו-[read] רואה אותה ואומר "עולה עם
+        // המחשב" — כלומר המשתמש מקבל אישור על פעולה שלא קרתה, ואחרי
+        // הפעלה מחדש עולה (במקרה הטוב) המתאם הישן. קוד היציאה הוא
+        // הראיה היחידה כאן, והוא אינו תלוי בשפת המערכת.
+        if (result.exitCode != 0) {
+          return await _addFailed(wanted, result.exitCode);
+        }
       } else {
         // /f כדי שלא יישאל, וקוד יציאה 1 (הערך לא היה קיים) הוא בדיוק
-        // המצב המבוקש ולכן אינו כשלון.
+        // המצב המבוקש ולכן אינו כשלון. מחיקה שנכשלה באמת נתפסת למטה,
+        // בהשוואת המצב שנקרא מחדש למצב שהתבקש.
         await _runReg(['delete', startupRunKey, '/v', startupValueName, '/f']);
       }
     } catch (e) {
@@ -167,6 +177,22 @@ class StartupRegistration {
       );
     }
     return state;
+  }
+
+  /// המצב אחרי `reg add` שנכשל.
+  ///
+  /// יש מקרה אחד שבו כישלון אינו כישלון: הערך שרצינו לכתוב כבר רשום
+  /// בדיוק ככה (המתקין כתב אותו), ולכן אין מה לתקן. בכל שאר המקרים
+  /// התשובה היא כבוי עם סיבה, גם אם ברישום יושבת רשומה אחרת בשם הזה.
+  Future<StartupState> _addFailed(String wanted, int exitCode) async {
+    final state = await read();
+    if (state.enabled && state.command == wanted) return state;
+    return StartupState(
+      supported: true,
+      enabled: false,
+      command: state.command,
+      reason: 'Windows לא קיבל את הרישום (reg.exe החזיר $exitCode)',
+    );
   }
 
   /// שולף את נתוני הערך מפלט `reg query`, או `null` אם לא נמצא.

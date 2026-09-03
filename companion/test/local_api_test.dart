@@ -143,6 +143,129 @@ void main() {
     });
   });
 
+  group('רק מחזיק המנוע מדווח', () {
+    /// מופע רקע לוקח את המנוע, ואז הלשונית מנסה לדווח בשמה.
+    setUp(() {
+      expect(hub.claimEngine('background:x'), isTrue);
+      expect(hub.claimEngine('foreground:a'), isFalse);
+    });
+
+    test('/publish ממופע שנדחה אינו משדר ואינו משנה מצב', () async {
+      final response = await client.request('POST', '/publish', body: {
+        'instance': 'foreground:a',
+        'bookId': 'ברכות',
+        'index': 12,
+      });
+
+      expect(response.status, HttpStatus.ok);
+      expect(response.json['engineMine'], isFalse);
+      expect(response.json['broadcast'], isFalse);
+      expect(transport.sent, isEmpty);
+      expect(response.json['local'], isNull, reason: 'המצב המקומי לא נגע');
+      expect(
+        (response.json['engine'] as Map)['owner'],
+        'background:x',
+        reason: 'והבקשה גם לא חטפה את ההחזקה',
+      );
+    });
+
+    test('/tabs ממופע שנדחה אינו משנה את השולחן', () async {
+      final response = await client.request('POST', '/tabs', body: {
+        'instance': 'foreground:a',
+        'tabs': [
+          {'b': 'ברכות', 'i': 4},
+        ],
+        'canClose': true,
+      });
+
+      expect(response.status, HttpStatus.ok);
+      expect(response.json['engineMine'], isFalse);
+      expect(response.json['localTabCount'], 0);
+      expect(transport.sent, isEmpty);
+    });
+
+    test('המחזיק עצמו ממשיך לדווח כרגיל', () async {
+      final response = await client.request('POST', '/publish', body: {
+        'instance': 'background:x',
+        'bookId': 'ברכות',
+        'index': 12,
+      });
+      expect(response.json['engineMine'], isTrue);
+      expect(response.json['broadcast'], isTrue);
+      expect(transport.sent, hasLength(1));
+    });
+
+    test('דיווח בלי instance מתקבל — זה ה-API הישן', () async {
+      final response = await client.request('POST', '/publish', body: {
+        'bookId': 'ברכות',
+        'index': 12,
+      });
+      expect(response.json['broadcast'], isTrue);
+      expect(transport.sent, hasLength(1));
+    });
+  });
+
+  group('גבולות גוף הבקשה', () {
+    test('גוף שעבר את התקרה נדחה ב-413 ואינו נקרא לזיכרון', () async {
+      // שם ספר אחד ענק: JSON תקין לגמרי, שהיה נבלע קודם בלי גבול.
+      final huge = jsonEncode({
+        'bookId': 'א' * maxApiBodyBytes,
+        'index': 1,
+      });
+      final response = await client.request(
+        'POST',
+        '/publish',
+        rawBody: utf8.encode(huge),
+      );
+
+      expect(response.status, HttpStatus.requestEntityTooLarge);
+      expect(transport.sent, isEmpty);
+    });
+
+    test('אחרי גוף שנדחה המתאם ממשיך לענות', () async {
+      await client.request(
+        'POST',
+        '/publish',
+        rawBody: utf8.encode(jsonEncode({'bookId': 'א' * maxApiBodyBytes})),
+      );
+
+      final hello = await client.request('GET', '/hello');
+      expect(hello.status, HttpStatus.ok);
+      expect(hello.json['app'], 'chavruta-companion');
+    });
+
+    test('גוף שאינו מסתיים נקטע ואינו מחזיק handler לנצח', () async {
+      // סוקט גולמי ולא HttpClient: הלקוח של Dart מסרב בעצמו לשלוח פחות
+      // ממה שהבטיח ב-Content-Length, וכאן זה בדיוק מה שצריך לדמות —
+      // תהליך מקומי שפתח בקשה, שלח חצי גוף ואינו ממשיך. בלי גבול הזמן
+      // ה-handler הזה היה תלוי עד סוף חיי התהליך.
+      final socket = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        api.port!,
+      );
+      addTearDown(() => socket.destroy());
+      socket.add(utf8.encode(
+        'POST /publish HTTP/1.1\r\n'
+        'Host: 127.0.0.1\r\n'
+        'Content-Type: application/json\r\n'
+        'Content-Length: 4096\r\n'
+        '\r\n'
+        '{"bookId":"x"',
+      ));
+      await socket.flush();
+
+      // מה שנבדק כאן הוא **שהחיבור משתחרר**, ולא נוסח התשובה: כשגוף
+      // הבקשה לא הושלם, `HttpServer` של Dart סוגר את החיבור ואינו שולח
+      // את התשובה שנכתבה לו (אומת — ראו [apiBodyTimeout]). לכן הציפייה
+      // היא ריק או 408, ובעיקר: בתוך הזמן, ולא לנצח.
+      final reply = await utf8.decoder
+          .bind(socket)
+          .join()
+          .timeout(apiBodyTimeout * 3);
+      expect(reply, anyOf(isEmpty, contains('408')));
+    }, timeout: const Timeout(Duration(seconds: 60)));
+  });
+
   group('POST /room', () {
     test('זיווג שומר את הקוד המנורמל', () async {
       config.roomCode = null;

@@ -13,6 +13,25 @@ import 'sync_hub.dart';
 /// מרווח בטחון גדול ובכל זאת חוסכות תחקור בלופ.
 const Duration longPollTimeout = Duration(seconds: 25);
 
+/// תקרת גודל לגוף בקשה, ואחריה הבקשה נדחית ב-413.
+///
+/// הגוף הגדול ביותר שהתוסף שולח הוא דיווח שולחן מלא: [maxTrackedTabs]
+/// ספרים עם שמותיהם, כלומר סדר גודל של עשרות קילובייטים לכל היותר.
+/// 256KB משאירים מרווח עצום ובכל זאת חוסמים גוף שנועד לנפח זיכרון.
+const int maxApiBodyBytes = 256 * 1024;
+
+/// כמה זמן ממתינים לגוף הבקשה. חיבור שנפתח ואינו מסיים לשלוח היה
+/// מחזיק handler פתוח לנצח; הגוף שהתוסף שולח מגיע על loopback במילישניות.
+///
+/// זהו גבול **חוסר פעילות** ולא גבול על הבקשה כולה: כל נתח שמגיע מאפס
+/// אותו, ולכן גוף גדול ואיטי אינו נקטע באמצע.
+///
+/// **מה שמשתחרר כאן הוא ה-handler, לא בהכרח נוסח התשובה.** כשגוף הבקשה
+/// לא הושלם, `HttpServer` של Dart סוגר את החיבור ואינו שולח את התשובה
+/// שנכתבה — אומת בבדיקה. ה-408 נכתב בכל זאת, כי במסלולים שבהם הגוף כן
+/// הושלם הוא מגיע ליעדו, והמחיר שלו אפס.
+const Duration apiBodyTimeout = Duration(seconds: 10);
+
 /// כותרות שדפדפן מוסיף בעצמו ואינו מאפשר לקוד JavaScript לגעת בהן.
 ///
 /// נוכחות של אחת מהן פירושה שהבקשה יצאה מדף אינטרנט — ולא מהתוסף, שפונה
@@ -23,6 +42,16 @@ const List<String> browserOnlyHeaders = [
   'sec-fetch-site',
   'sec-fetch-mode',
 ];
+
+/// גוף בקשה שעבר את [maxApiBodyBytes]. מתורגם ל-413.
+class _BodyTooBig implements Exception {
+  const _BodyTooBig();
+}
+
+/// גוף בקשה שלא הושלם בתוך [apiBodyTimeout]. מתורגם ל-408.
+class _BodyTimeout implements Exception {
+  const _BodyTimeout();
+}
 
 /// שרת ה-HTTP שהתוסף מדבר איתו, על loopback בלבד.
 ///
@@ -132,15 +161,36 @@ class LocalApi {
             'error': 'unknown endpoint',
           }, status: HttpStatus.notFound);
       }
+    } on _BodyTooBig {
+      // שגיאת לקוח ולא שגיאת שרת, ולכן לא 500: מי ששלח גוף כזה קיבל
+      // תשובה מדויקת, והמתאם ממשיך לענות לכל השאר.
+      onLog?.call('נדחה גוף בקשה שעבר $maxApiBodyBytes בייט ב-${request.uri.path}');
+      await _respondSafely(request, {
+        'error': 'request body too large',
+      }, status: HttpStatus.requestEntityTooLarge);
+    } on _BodyTimeout {
+      onLog?.call('גוף הבקשה ל-${request.uri.path} לא הושלם בזמן');
+      await _respondSafely(request, {
+        'error': 'request body timed out',
+      }, status: HttpStatus.requestTimeout);
     } catch (e) {
       onLog?.call('request failed: $e');
-      try {
-        await _respondJson(request, {
-          'error': '$e',
-        }, status: HttpStatus.internalServerError);
-      } catch (_) {
-        // התשובה כבר נסגרה — אין מה להוסיף.
-      }
+      await _respondSafely(request, {
+        'error': '$e',
+      }, status: HttpStatus.internalServerError);
+    }
+  }
+
+  /// תשובה שאסור לה להפיל את ה-handler. הבקשה עלולה להיות סגורה כבר.
+  Future<void> _respondSafely(
+    HttpRequest request,
+    Map<String, Object?> payload, {
+    required int status,
+  }) async {
+    try {
+      await _respondJson(request, payload, status: status);
+    } catch (_) {
+      // התשובה כבר נסגרה — אין מה להוסיף.
     }
   }
 
@@ -249,10 +299,16 @@ class LocalApi {
     // דיווח מיקום הוא סימן חיים של המנוע ממש כמו `/events`, ולכן הוא
     // מחדש את ההחזקה. `instance` אופציונלי — בלעדיו הדיווח נקלט כרגיל,
     // וכך `curl` ובדיקות ידניות ממשיכים לעבוד.
-    final instance = body is Map ? body['instance'] : null;
-    if (instance is String && instance.isNotEmpty) hub.claimEngine(instance);
+    if (!_ownsEngine(body)) {
+      await _rejectNotOwner(request);
+      return;
+    }
     final broadcast = await hub.publishLocal(location);
-    await _respondJson(request, {'broadcast': broadcast, ...hub.snapshot()});
+    await _respondJson(request, {
+      'broadcast': broadcast,
+      'engineMine': true,
+      ...hub.snapshot(),
+    });
   }
 
   /// דיווח על הספרים הפתוחים באוצריא כאן.
@@ -283,8 +339,10 @@ class LocalApi {
       return;
     }
     // דיווח שולחן הוא סימן חיים של המנוע, בדיוק כמו `/publish`.
-    final instance = body is Map ? body['instance'] : null;
-    if (instance is String && instance.isNotEmpty) hub.claimEngine(instance);
+    if (!_ownsEngine(body)) {
+      await _rejectNotOwner(request);
+      return;
+    }
 
     final rawFailed = body is Map ? body['failed'] : null;
     final broadcast = await hub.publishLocalDesk(
@@ -292,8 +350,36 @@ class LocalApi {
       canClose: body is Map && body['canClose'] == true,
       failed: rawFailed is List ? rawFailed.whereType<String>() : const [],
     );
-    await _respondJson(request, {'broadcast': broadcast, ...hub.snapshot()});
+    await _respondJson(request, {
+      'broadcast': broadcast,
+      'engineMine': true,
+      ...hub.snapshot(),
+    });
   }
+
+  /// האם המופע ששלח את [body] רשאי לדווח, ומחדש את ההחזקה אם כן.
+  ///
+  /// **התשובה של `claimEngine` אינה עצה.** מופע שנדחה — לשונית שמופע
+  /// הרקע לקח ממנה את המנוע — היה ממשיך כאן לעדכן את המצב המקומי
+  /// ולשדר, ואז שני מופעים מדווחים מיקום במקביל: בדיוק מה שההחזקה באה
+  /// למנוע. הדחייה קורית לפני כל שינוי מצב, ולא אחריו.
+  ///
+  /// גוף בלי `instance` הוא הדיווח הישן — `curl`, בדיקות ידניות, ותוסף
+  /// מגרסה שאינה מכירה מופעים — והוא מתקבל כרגיל.
+  bool _ownsEngine(Object? body) {
+    final instance = body is Map ? body['instance'] : null;
+    if (instance is! String || instance.isEmpty) return true;
+    return hub.claimEngine(instance);
+  }
+
+  /// התשובה למופע שאינו המחזיק. `200` ולא `409`, בדיוק כמו `/events`:
+  /// זה אינו מצב שגיאה אלא המצב הרגיל של לשונית פתוחה לצד מופע רקע,
+  /// והתוסף מזהה אותו בשדה אחד בכל הנתיבים.
+  Future<void> _rejectNotOwner(HttpRequest request) => _respondJson(request, {
+    'broadcast': false,
+    'engineMine': false,
+    ...hub.snapshot(),
+  });
 
   /// ממיר את דיווח התוסף לפריטי שולחן.
   ///
@@ -468,10 +554,30 @@ class LocalApi {
   ///
   /// גם פענוח ה-UTF-8 עטוף: `utf8.decoder` זורק על בייטים שאינם UTF-8
   /// תקין, וזה היה מגיע כ-500 ("שגיאת שרת") על בקשה פגומה של הלקוח.
+  ///
+  /// **הקריאה חסומה בגודל ובזמן.** ההאזנה היא על loopback, אבל loopback
+  /// אינו ריק: כל תהליך שרץ במחשב יכול לפתוח POST, לשלוח גוף בלי סוף או
+  /// לשלוח בייט אחת לדקה ולעולם לא לסגור — ושניהם היו נבלעים כאן בשקט,
+  /// אחד בזיכרון והשני ב-handler שנשאר תלוי. חריגה נזרקת כ-[_BodyTooBig]
+  /// או [_BodyTimeout], והנתיב שקרא הופך אותה לתשובה.
   Future<Object?> _readJsonBody(HttpRequest request) async {
+    // `Content-Length` נבדק קודם: כשהוא קיים אין טעם לקרוא בייט אחד.
+    if (request.contentLength > maxApiBodyBytes) throw const _BodyTooBig();
+
+    final bytes = <int>[];
     final String text;
     try {
-      text = await utf8.decoder.bind(request).join();
+      await for (final chunk in request.timeout(apiBodyTimeout)) {
+        bytes.addAll(chunk);
+        // גם גוף chunked, שאין לו `Content-Length`, נעצר כאן — ברגע
+        // שעבר את התקרה, ולא אחרי שכבר נצבר כולו בזיכרון.
+        if (bytes.length > maxApiBodyBytes) throw const _BodyTooBig();
+      }
+      text = utf8.decode(bytes);
+    } on _BodyTooBig {
+      rethrow;
+    } on TimeoutException {
+      throw const _BodyTimeout();
     } catch (_) {
       return null;
     }

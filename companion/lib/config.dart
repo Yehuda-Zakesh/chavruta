@@ -213,16 +213,55 @@ class CompanionConfig {
     return fresh;
   }
 
-  Future<void> save() async {
+  /// השמירה שרצה עכשיו, אם יש. ראו [save].
+  Future<void> _saving = Future<void>.value();
+
+  /// שומר את הקונפיג לדיסק.
+  ///
+  /// **כתיבה אטומית, ולא ישירות אל `config.json`.** קובץ הקונפיג הוא
+  /// היחיד שזוכר את קוד החברותא ואת [deviceId], ו-[load] בונה קונפיג
+  /// חדש לגמרי כשהוא אינו נקרא — כלומר הפסקה באמצע כתיבה (נפילת חשמל,
+  /// כיבוי, שני handlers שכתבו יחד) אינה "עדכון שאבד" אלא **חדר שנעלם
+  /// ומזהה מכשיר חדש**, ובשטח זה נראה בדיוק כמו קישור בלוטות' שהתנתק.
+  /// לכן כותבים לקובץ זמני באותה תיקייה ומחליפים בשם — פעולה שמערכת
+  /// הקבצים מבצעת כולה או לא מבצעת כלל.
+  ///
+  /// **וגם: שמירה אחת בכל רגע.** יש כאן `await`, ובלעדי התור שתי בקשות
+  /// שהגיעו יחד (שינוי חדר ושינוי שם) היו מחליפות את אותו שם בו-זמנית.
+  /// התוכן זהה בשתיהן — כל השדות יושבים באובייקט הזה — ולכן אין כאן
+  /// עדכון שנדרס, אך יש כאן שתי פעולות החלפה שמתרוצצות על קובץ אחד.
+  Future<void> save() {
+    final next = _saving.then((_) => _writeAtomically());
+    // התור ממשיך גם אחרי כישלון, אבל **הקורא רואה אותו**: שמירה שנכשלה
+    // אינה חוסמת את הבאה בתור, ואינה מדווחת כהצלחה למי שביקש אותה.
+    _saving = next.catchError((_) {});
+    return next;
+  }
+
+  Future<void> _writeAtomically() async {
     await storageDir.create(recursive: true);
-    await file.writeAsString(
-      const JsonEncoder.withIndent('  ').convert({
-        'deviceId': deviceId,
-        'deviceName': deviceName,
-        if (isPaired) 'roomCode': roomCode,
-        if (!syncLocation) 'syncLocation': false,
-        if (closePolicy != ClosePolicy.ask) 'closePolicy': closePolicy.wire,
-      }),
-    );
+    final text = const JsonEncoder.withIndent('  ').convert({
+      'deviceId': deviceId,
+      'deviceName': deviceName,
+      if (isPaired) 'roomCode': roomCode,
+      if (!syncLocation) 'syncLocation': false,
+      if (closePolicy != ClosePolicy.ask) 'closePolicy': closePolicy.wire,
+    });
+
+    final temp = File('${file.path}.tmp');
+    await temp.writeAsString(text, flush: true);
+    try {
+      await temp.rename(file.path);
+    } on FileSystemException {
+      // ב-Windows החלפה בשם נכשלת כשמישהו אחר מחזיק את היעד פתוח
+      // (סורק וירוסים, גיבוי). הקובץ הזמני כבר על הדיסק ושלם, ולכן
+      // הנפילה חזרה לכתיבה ישירה מפסידה רק את האטומיות — ולא את הערך.
+      await file.writeAsString(text, flush: true);
+      try {
+        await temp.delete();
+      } catch (_) {
+        // שארית לא מזיקה; הכתיבה הבאה תדרוס אותה ממילא.
+      }
+    }
   }
 }
