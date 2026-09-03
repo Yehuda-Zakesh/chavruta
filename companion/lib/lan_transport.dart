@@ -79,7 +79,18 @@ class LanTransport {
     this.onLog,
     Duration? rebindMinUptime,
     this.port = lanPort,
+    this.addressesProvider,
   }) : rebindMinUptime = rebindMinUptime ?? immediateRebindMinUptime;
+
+  /// מונה את כתובות ה-IPv4 של כרטיסי הרשת. `null` = מנייה אמיתית דרך
+  /// `NetworkInterface.list`.
+  ///
+  /// קיים בשביל בדיקות, וזה תפר שהיה חסר: **מערך הכרטיסים משתנה תוך
+  /// ריצה** — כרטיס בלוטות' שמתחבר אחרי עליית המתאם, או נופל בהתעוררות
+  /// משינה — וזה בדיוק המסלול המרכזי כאן. בלי הזרקה אין שום דרך לכסות
+  /// אותו, ו-[broadcastRoutesFor] לבדו נבדק כפונקציה טהורה על רשימות
+  /// סטטיות.
+  final Future<List<String>> Function()? addressesProvider;
 
   /// הפורט שעליו מאזינים ואליו משדרים. פרמטר ולא הקבוע [lanPort] ישירות,
   /// כדי שבדיקות יקבלו פורט משלהן: הפורט האמיתי משותף (`reuseAddress`) עם
@@ -106,8 +117,9 @@ class LanTransport {
   RawDatagramSocket? _socket;
   Timer? _watchdog;
 
-  /// מונע שתי בנייות מקבילות של הסוקט (שומר הסף ושידור שנתקל בסוקט מת).
-  bool _binding = false;
+  /// הקימה שבתעופה כרגע, אם יש. מונע שתי בנייות מקבילות של הסוקט (שומר
+  /// הסף ושידור שנתקל בסוקט מת), **ומאפשר לשניהם להמתין לאותה תוצאה**.
+  Future<bool>? _bindInFlight;
 
   /// אחרי [dispose] אין קמים מחדש — גם לא בעקבות שגיאה שהגיעה באיחור.
   bool _disposed = false;
@@ -138,6 +150,12 @@ class LanTransport {
   int _received = 0;
   int _receivedRemote = 0;
   int _rejected = 0;
+
+  /// דחיות שנבעו **מפער שעונים** ולא מקוד שאינו זהה. נמנות בנפרד כדי
+  /// שהאבחון לא יאשים את הקוד: הודעה שנדחתה על זמן כבר עברה אימות
+  /// חתימה, כלומר הקוד בשני הצדדים **כן** זהה, וזו בדיוק ההפוכה של מה
+  /// שהאבחנה "כמעט בוודאות הקוד אינו זהה" אומרת למשתמש לתקן.
+  int _clockRejected = 0;
   String? _lastRemoteSource;
 
   /// הכתובות של המחשב הזה, לסיווג "הגיע ממחשב אחר". מתעדכן בכל מנייה.
@@ -152,6 +170,9 @@ class LanTransport {
   /// סוקטי השידור, לפי כתובת הכרטיס שהם קשורים אליה. ראו [BroadcastRoute].
   final Map<String, RawDatagramSocket> _senders = {};
 
+  /// קישורי סוקט שידור שבתעופה, לפי כתובת. ראו [_senderFor].
+  final Map<String, Future<RawDatagramSocket?>> _senderBinds = {};
+
   /// כתובות שלא ניתן היה לפתוח עליהן סוקט שידור, ושכבר דווחו ליומן.
   ///
   /// כרטיס **מנותק** שיש לו כתובת — וזה מצבם הרגיל של כרטיסי Wi-Fi Direct
@@ -164,13 +185,22 @@ class LanTransport {
   /// ראו [_sendGlobal] — כשל כזה אינו מונע את השידור המכוון.
   final Set<String> _globalSendFailures = {};
 
-  /// כתובות שפעם אחת כן נפתח עליהן סוקט שידור.
+  /// כתובות שהשידור דרכן עובד **כרגע**, כלומר נפתח עליהן סוקט שידור
+  /// והוא עוד לא נכשל.
   ///
-  /// כרטיס שנמנה אך מעולם לא נקשר הוא כמעט תמיד Wi-Fi Direct או Bluetooth
-  /// PAN שאין בצדו אף אחד. הוא נשאר ברשימת הניסיונות בכוונה (ברגע שיתחבר
-  /// השידור יעבור דרכו מיד), אבל מוצג לתוסף כמי שאינו משדר — אחרת שורת
-  /// הקישורים, שכל תפקידה להשוות שני מחשבים, מציגה שלושה כרטיסים מתים.
-  final Set<String> _senderEverBound = {};
+  /// כרטיס שנמנה אך אינו ניתן לקישור הוא כמעט תמיד Wi-Fi Direct או
+  /// Bluetooth PAN שאין בצדו אף אחד. הוא נשאר ברשימת הניסיונות בכוונה
+  /// (ברגע שיתחבר השידור יעבור דרכו מיד), אבל מוצג לתוסף כמי שאינו משדר
+  /// — אחרת שורת הקישורים, שכל תפקידה להשוות שני מחשבים, מציגה שלושה
+  /// כרטיסים מתים.
+  ///
+  /// **הכתובת מוסרת מכאן ברגע שהקישור נכשל, וזה העיקר.** קודם לכן זו
+  /// הייתה קבוצת "נקשר פעם אי פעם" שלא נוקתה לעולם, ולכן קישור בלוטות'
+  /// שעבד ואחר כך נפל — מה שקורה ב-Windows בכל התעוררות משינה — המשיך
+  /// להיות מוצג כמשדר. זו היפוכה של הבדיקה החד-משמעית שהתיעוד מבטיח:
+  /// הכרטיס המנותק הכריז על עצמו כקישור חי, והמשתמש נשלח לחפש את התקלה
+  /// בקוד החברותא.
+  final Set<String> _sendingNow = {};
 
   /// מסלולי השידור שנמנו לאחרונה, ובן כמה הם. ראו [targetsCacheTtl].
   List<BroadcastRoute>? _cachedRoutes;
@@ -202,8 +232,13 @@ class LanTransport {
   /// מתוכן, כמה הגיעו מכתובת שאינה של המחשב הזה.
   int get datagramsFromOthers => _receivedRemote;
 
-  /// כמה נקלטו ונזרקו בפענוח (חדר אחר, חתימה שגויה, הודעה לא טרייה).
+  /// כמה נקלטו ונזרקו בפענוח (חדר אחר, או חתימה שגויה). **אינו כולל
+  /// דחיות על פער שעונים** — אלה ב-[datagramsClockRejected].
   int get datagramsRejected => _rejected;
+
+  /// כמה נדחו על פער שעונים, כלומר אחרי שהחתימה כן אומתה. ראו
+  /// [_clockRejected].
+  int get datagramsClockRejected => _clockRejected;
 
   /// כתובת ה-IP האחרונה שממנה נקלטה דטגרמה ממחשב אחר, או `null`.
   String? get lastRemoteSource => _lastRemoteSource;
@@ -212,15 +247,19 @@ class LanTransport {
   /// מחשבים היא הדרך המהירה לראות אם הם באמת על אותו קישור.
   List<BroadcastRoute> get routes => _lastRoutes;
 
-  /// האם דרך [local] אי פעם יצא שידור. ראו [_senderEverBound] — כרטיס
+  /// האם דרך [local] יוצא שידור **כרגע**. ראו [_sendingNow] — כרטיס
   /// שנמנה אך אינו משדר הוא רעש בשורת הקישורים, לא קישור.
-  bool isSending(String local) => _senderEverBound.contains(local);
+  bool isSending(String local) => _sendingNow.contains(local);
 
   Future<bool> start() async {
-    _watchdog ??= Timer.periodic(
-      socketWatchdogInterval,
-      (_) => unawaited(_bind()),
-    );
+    _watchdog ??= Timer.periodic(socketWatchdogInterval, (_) {
+      unawaited(_bind());
+      // **מונים את הכרטיסים גם כשאין זיווג.** [send] יוצא לפני המנייה
+      // כשאין קוד חדר, ובלי המנייה כאן כרטיס בלוטות' שהתחבר אחרי עליית
+      // המתאם לא היה מזוהה כלל — והתוסף היה מציג את שורת הקישורים כפי
+      // שנמנתה פעם אחת ב-[start], או ריקה לגמרי אחרי קימה מחדש.
+      unawaited(_routes());
+    });
     final bound = await _bind();
     // מונים את הכרטיסים מיד ולא רק בשידור הראשון, כדי שסיווג "הגיע
     // ממחשב אחר" יהיה נכון גם לדטגרמה הראשונה שתיכנס.
@@ -229,11 +268,24 @@ class LanTransport {
   }
 
   /// בונה את הסוקט אם אין. מחזיר האם יש סוקט חי בסוף הפעולה.
-  Future<bool> _bind() async {
-    if (_disposed) return false;
-    if (_socket != null) return true;
-    if (_binding) return false;
-    _binding = true;
+  ///
+  /// **קימה אחת בלבד בתעופה, וכל הקוראים ממתינים לאותה קימה.** קודם לכן
+  /// קורא שני קיבל `false` מיד, ולכן [send] היה יוצא בלי לשדר בדיוק
+  /// בשנייה שבה שומר הסף החזיר את הסוקט לחיים — ומעבר דף שהמשתמש עשה
+  /// היה אובד עד השידור הבא.
+  Future<bool> _bind() {
+    if (_disposed) return Future.value(false);
+    if (_socket != null) return Future.value(true);
+    final inFlight = _bindInFlight;
+    if (inFlight != null) return inFlight;
+    final started = _doBind();
+    _bindInFlight = started;
+    return started.whenComplete(() {
+      if (identical(_bindInFlight, started)) _bindInFlight = null;
+    });
+  }
+
+  Future<bool> _doBind() async {
     try {
       final socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
@@ -242,6 +294,13 @@ class LanTransport {
         // כל אחד מהם מקבל עותק, ולכן שני מופעי אוצריא במחשב אחד עובדים.
         reuseAddress: true,
       );
+      // [dispose] שקרה בזמן שהקישור היה בתעופה. בלי הבדיקה הזאת הסוקט
+      // אינו נסגר לעולם (הטיימר כבר בוטל), [isBound] חוזר לאמת אחרי
+      // dispose, והדטגרמה הראשונה מגיעה ל-StreamController סגור.
+      if (_disposed) {
+        socket.close();
+        return false;
+      }
       socket.broadcastEnabled = true;
       socket.listen(
         (event) {
@@ -254,6 +313,17 @@ class LanTransport {
         // אסור לה להפיל את זה שקם במקומו.
         onError: (Object error) {
           if (identical(_socket, socket)) reportSocketFailure(error);
+        },
+        // **זרם שנסגר בלי שגיאה.** בלעדיו `_socket` נשאר לא-null, [isBound]
+        // חוזר אמת, התוסף מציג "מחובר" — ושום דבר אינו נקלט עוד. השידור
+        // ממשיך לצאת מסוקטי השידור הנפרדים, ולכן גם [deadSendThreshold]
+        // אינו תופס את זה: שקט חד-כיווני שנראה תקין לגמרי.
+        onDone: () {
+          if (identical(_socket, socket)) {
+            reportSocketFailure(
+              SocketException('סוקט הקליטה נסגר בלי שגיאה'),
+            );
+          }
         },
       );
       _socket = socket;
@@ -278,8 +348,6 @@ class LanTransport {
       if (_lastError != reason) onLog?.call(reason);
       _lastError = reason;
       return false;
-    } finally {
-      _binding = false;
     }
   }
 
@@ -323,6 +391,24 @@ class LanTransport {
     if (!shortLived) unawaited(_bind());
   }
 
+  /// מאפס את מוני האבחון. נקרא בהחלפת חדר.
+  ///
+  /// **בלי זה סולם ארבע האבחנות חד-כיווני לכל אורך חיי התהליך.** המונים
+  /// הצטברו מהעלייה ולא אופסו לעולם, ולכן אחרי שנקלטה דטגרמה אחת ממחשב
+  /// אחר, האבחנה "השידור שלכם יוצא וחוזר, אך שום הודעה ממחשב אחר לא
+  /// הגיעה" לא הייתה מוצגת שוב אף פעם. וזה בדיוק מסלול הבלוטות': הקישור
+  /// נופל בכל התעוררות משינה, ואחרי הנפילה התוסף היה מדלג לאבחנה הבאה
+  /// ("הודעות מגיעות אך נדחות — הקוד אינו זהה") ושולח את המשתמש לבדוק
+  /// את הקוד במקום לחבר מחדש את ה-PAN.
+  void resetDiagnostics() {
+    _received = 0;
+    _receivedRemote = 0;
+    _rejected = 0;
+    _clockRejected = 0;
+    _lastRemoteSource = null;
+    _clockSkewMinutes = null;
+  }
+
   void _handleDatagram(Datagram datagram) {
     // המונים נספרים לפני כל סינון, וגם כשאין קוד חברותא: השאלה שהם
     // עונים עליה היא "מה בכלל מגיע לסוקט", ולא "מה קיבלנו".
@@ -340,15 +426,28 @@ class LanTransport {
 
     final roomCode = roomCodeProvider();
     if (roomCode == null || roomCode.isEmpty) return;
+    var clockRejected = false;
     final message = SyncMessage.decode(
       datagram.data,
       roomCode,
-      onClockSkew: _noteClockSkew,
+      onClockSkew: (skew) {
+        clockRejected = true;
+        _noteClockSkew(skew);
+      },
     );
     if (message == null) {
       // דטגרמה שלנו שחזרה נזרקת ב-hub ולא כאן, ולכן דחייה של דטגרמה
-      // מרוחקת היא תמיד סימן אמיתי: קוד אחר, חתימה, או זמן.
-      if (remote) _rejected++;
+      // מרוחקת היא תמיד סימן אמיתי: קוד אחר, חתימה, או זמן. **ופער
+      // שעונים נמנה בנפרד** — ראו [_clockRejected]: הודעה שנדחתה עליו
+      // כבר אומתה בחתימה, כלומר הקוד זהה, והאבחנה "הקוד אינו זהה"
+      // הייתה שולחת את המשתמש לתקן דבר תקין.
+      if (remote) {
+        if (clockRejected) {
+          _clockRejected++;
+        } else {
+          _rejected++;
+        }
+      }
       return;
     }
     // **רק הודעה ממחשב אחר מנקה את אזהרת השעונים.** הדטגרמה שלנו חוזרת
@@ -392,9 +491,11 @@ class LanTransport {
 
     final bytes = message.encode(roomCode);
     var delivered = 0;
+    var liveSenders = 0;
     for (final route in routes) {
       final sender = await _senderFor(route.local);
       if (sender == null) continue;
+      liveSenders++;
       try {
         final sent = sender.send(bytes, InternetAddress(route.broadcast), port);
         delivered += sent;
@@ -416,8 +517,20 @@ class LanTransport {
       _deadSends = 0;
       return;
     }
-    // שידור שלם שלא הוציא בייט אחד מאף כרטיס. זה כבר אינו כרטיס בודד
-    // שנפל אלא שקט מלא, ולכן מקימים גם את סוקט הקליטה.
+    // **אף כרטיס לא נקשר, ולכן אין כאן מה להסיק על סוקט הקליטה.** זה
+    // המצב הרגיל של מחשב בלי ראוטר שהבלוטות' שלו עוד לא חובר: הכתובת
+    // `169.254` של ה-PAN כן נמנית (אימתנו — `NetworkInterface.list`
+    // מחזיר אותה), אבל הקישור אליה נכשל ב-`WSAEADDRNOTAVAIL` כל עוד היא
+    // `Tentative`. הענישה של סוקט הקליטה כאן הייתה סוגרת סוקט שעובד
+    // מושלם, מדליקה את [lastError], ומכריזה בתוסף "המתאם אינו מאזין
+    // לקישור" — ואז קמה, משדרת נוכחות, נכשלת שוב, בלופ של 40 שניות.
+    // התקלה האמיתית היא שאין קישור, וזה מה שהתוסף צריך לומר.
+    if (liveSenders == 0) {
+      _deadSends = 0;
+      return;
+    }
+    // שידור שלם שלא הוציא בייט אחד, **מסוקטים שכן נקשרו**. זה כבר אינו
+    // כרטיס בודד שנפל אלא שקט מלא, ולכן מקימים גם את סוקט הקליטה.
     if (++_deadSends >= deadSendThreshold) {
       reportSocketFailure(
         SocketException('השידור אינו יוצא — הסוקט אינו פעיל'),
@@ -427,11 +540,30 @@ class LanTransport {
 
   /// סוקט השידור של [local], ובונה אותו אם עוד אין. `null` = לא ניתן
   /// לפתוח סוקט על הכתובת הזאת (כרטיס שנעלם בין המנייה לשידור).
-  Future<RawDatagramSocket?> _senderFor(String local) async {
+  /// **קישור אחד בלבד בתעופה לכל כתובת, וכל הקוראים ממתינים לאותו קישור.**
+  /// בלי זה שתי שליחות חופפות לאותו כרטיס — טיימר הנוכחות מול שידור מיקום
+  /// במעבר דף, או הלופ שמשדר את מנות השולחן — שתיהן רואות `null`, שתיהן
+  /// קושרות סוקט, וההקצאה השנייה מנטרת את הראשון: הוא אינו נסגר לעולם
+  /// ומחזיק פורט UDP ומנוי `listen` עד סוף התהליך.
+  Future<RawDatagramSocket?> _senderFor(String local) {
     final existing = _senders[local];
-    if (existing != null) return existing;
+    if (existing != null) return Future.value(existing);
+    final inFlight = _senderBinds[local];
+    if (inFlight != null) return inFlight;
+    final started = _bindSender(local);
+    _senderBinds[local] = started;
+    return started.whenComplete(() {
+      if (identical(_senderBinds[local], started)) _senderBinds.remove(local);
+    });
+  }
+
+  Future<RawDatagramSocket?> _bindSender(String local) async {
     try {
       final socket = await RawDatagramSocket.bind(InternetAddress(local), 0);
+      if (_disposed) {
+        socket.close();
+        return null;
+      }
       socket.broadcastEnabled = true;
       // סוקט שידור אינו קולט דבר — הקליטה כולה על הסוקט הכללי שעל פורט
       // [lanPort]. ההאזנה כאן היא רק כדי לתפוס שגיאה אסינכרונית, שבעקבותיה
@@ -444,9 +576,12 @@ class LanTransport {
       );
       _senders[local] = socket;
       _senderFailures.remove(local);
-      _senderEverBound.add(local);
+      _sendingNow.add(local);
       return socket;
     } on SocketException catch (e) {
+      // הכרטיס אינו מאפשר קישור **כרגע**, ולכן אינו משדר — גם אם בעבר
+      // כן היה. ראו [_sendingNow].
+      _sendingNow.remove(local);
       // פעם אחת לכל כתובת, עד שרשימת המסלולים תשתנה. ראו [_senderFailures].
       if (_senderFailures.add(local)) {
         onLog?.call(
@@ -484,6 +619,10 @@ class LanTransport {
 
   void _dropSender(String local) {
     _senders.remove(local)?.close();
+    // הסוקט נזרק, ולכן דרך הכתובת הזאת לא יוצא שידור עד שיקום מחדש.
+    // זה מכסה את כל המסלולים שמגיעים לכאן: שליחה שהחזירה 0, שגיאה
+    // אסינכרונית, כרטיס שנעלם מהמנייה, ונפילת סוקט הקליטה.
+    _sendingNow.remove(local);
   }
 
   /// מדווח ליומן על מסלולי השידור, אך ורק כשהם משתנים. זו שורת האבחון
@@ -571,18 +710,30 @@ class LanTransport {
 
     final addresses = <String>[];
     try {
-      final interfaces = await NetworkInterface.list(
-        type: InternetAddressType.IPv4,
-        includeLoopback: false,
-        includeLinkLocal: true,
-      );
-      for (final interface in interfaces) {
-        for (final address in interface.addresses) {
-          addresses.add(address.address);
+      final provider = addressesProvider;
+      if (provider != null) {
+        addresses.addAll(await provider());
+      } else {
+        final interfaces = await NetworkInterface.list(
+          type: InternetAddressType.IPv4,
+          includeLoopback: false,
+          includeLinkLocal: true,
+        );
+        for (final interface in interfaces) {
+          for (final address in interface.addresses) {
+            addresses.add(address.address);
+          }
         }
       }
     } catch (e) {
       onLog?.call('לא ניתן לרשום כרטיסי רשת: $e');
+      // **מנייה שנכשלה אינה "אין כתובות".** דריסת [_localAddresses]
+      // בקבוצה ריקה כאן הייתה מסווגת את הדטגרמות שלנו־עצמנו שחוזרות
+      // מה-broadcast כ"הגיעו ממחשב אחר": [datagramsFromOthers] היה עולה,
+      // [lastRemoteSource] היה מציג את הכתובת שלנו, וההודעה שלנו הייתה
+      // מוחקת את אזהרת פער השעונים. כלומר האבחון היה מצביע על הסיבה
+      // הלא-נכונה בדיוק כשהרשת מתנדנדת. משאירים את מה שנמנה לאחרונה.
+      return _cachedRoutes ?? _lastRoutes;
     }
     final routes = broadcastRoutesFor(addresses);
     _localAddresses = addresses.toSet();

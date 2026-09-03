@@ -523,7 +523,7 @@ void main() {
       // מה שהיא פתחה.
       await baseline();
       await transport.deliver(
-        deskFrom([const DeskEntry(bookId: 'ספר נדיר', stamp: 900, by: 'חברותא')]),
+        deskFrom([DeskEntry(bookId: 'ספר נדיר', stamp: remoteStamp(), by: 'חברותא')]),
       );
       transport.sent.clear();
 
@@ -611,7 +611,7 @@ void main() {
     test('ספר שלא נפתח כאן אינו מוצע שוב', () async {
       await baseline();
       await transport.deliver(
-        deskFrom([const DeskEntry(bookId: 'ספר נדיר', stamp: 900, by: 'חברותא')]),
+        deskFrom([DeskEntry(bookId: 'ספר נדיר', stamp: remoteStamp(), by: 'חברותא')]),
       );
       expect(hub.deskPlan().open.map((e) => e.bookId), ['ספר נדיר']);
 
@@ -791,5 +791,271 @@ void main() {
       expect(hub.hasDeskWork, isFalse);
       expect(other.hasDeskWork, isFalse);
     });
+  });
+
+  /// חותמת הפריט (`s`) אינה מאומתת בשום מקום אחר: `DeskEntry.fromJson`
+  /// מקבל כל מספר אי-שלילי, ובדיקת הטריות חלה על `ts` של המעטפת בלבד.
+  group('חותמת שולחן חורגת', () {
+    DeskEntry poisoned(int stamp) =>
+        DeskEntry(bookId: 'ברכות', stamp: stamp, by: 'חברותא');
+
+    test('פריט עם חותמת של שנים קדימה נזרק', () async {
+      // hub משלו, כדי לתפוס את היומן: `onLog` נקבע בבנייה.
+      final logs = <String>[];
+      final logged = SyncHub(
+        config: config,
+        transport: transport,
+        clock: () => now,
+        onLog: logs.add,
+      );
+      addTearDown(logged.dispose);
+      await logged.publishLocalDesk(const [], canClose: true);
+
+      final farFuture = now.millisecondsSinceEpoch +
+          const Duration(days: 3650).inMilliseconds;
+      await transport.deliver(
+        incoming(
+          type: SyncMessageType.desk,
+          location: null,
+          entries: [poisoned(farFuture)],
+        ),
+      );
+
+      expect(logged.deskPlan().open, isEmpty, reason: 'הפריט לא נכנס לשולחן');
+      expect(
+        logs.any((line) => line.contains('חורגת')),
+        isTrue,
+        reason: 'ונאמר למה, כי אחרת זה שקט מוחלט',
+      );
+    });
+
+    /// **זה הנזק שהשער מונע.** בלי הבדיקה החותמת הייתה מקדמת את השעון
+    /// הלוגי לאותו מקום, ומאותו רגע כל פעולה אמיתית של החברותא מפסידה
+    /// בהכרעה — הספר נתקע במצבו והצד השני מושתק בשקט.
+    test('חותמת חורגת אינה מרעילה את השעון הלוגי', () async {
+      await hub.publishLocalDesk(const [], canClose: true);
+      final farFuture = now.millisecondsSinceEpoch +
+          const Duration(days: 3650).inMilliseconds;
+      await transport.deliver(
+        incoming(
+          type: SyncMessageType.desk,
+          location: null,
+          entries: [poisoned(farFuture)],
+        ),
+      );
+
+      // פעולה מקומית אחרי ההרעלה: החותמת שלה צריכה להיות שעון הקיר,
+      // ולא `farFuture + 1`.
+      await hub.publishLocalDesk([
+        const DeskEntry(bookId: 'שבת', stamp: 0, by: 'x'),
+      ]);
+      await hub.carryToDesk(['שבת']);
+      final ours = transport.sent
+          .where((m) => m.type == SyncMessageType.desk)
+          .expand((m) => m.entries)
+          .where((e) => e.bookId == 'שבת')
+          .single;
+      expect(ours.stamp, lessThan(farFuture));
+    });
+
+    test('החלפת חדר מאפסת את השעון הלוגי', () async {
+      await hub.publishLocalDesk(const [], canClose: true);
+      final ahead = now.millisecondsSinceEpoch +
+          const Duration(minutes: 4).inMilliseconds;
+      await transport.deliver(
+        incoming(
+          type: SyncMessageType.desk,
+          location: null,
+          entries: [DeskEntry(bookId: 'ברכות', stamp: ahead, by: 'חברותא')],
+        ),
+      );
+
+      await hub.setRoom('חדר אחר');
+      transport.sent.clear();
+
+      await hub.publishLocalDesk([
+        const DeskEntry(bookId: 'שבת', stamp: 0, by: 'x'),
+      ]);
+      await hub.carryToDesk(['שבת']);
+      final ours = transport.sent
+          .where((m) => m.type == SyncMessageType.desk)
+          .expand((m) => m.entries)
+          .single;
+      expect(
+        ours.stamp,
+        lessThanOrEqualTo(now.millisecondsSinceEpoch),
+        reason: 'החדר החדש מתחיל משעון הקיר, ולא מהחותמת של החדר הקודם',
+      );
+    });
+  });
+
+  /// `bye` הייתה סוג ההודעה היחיד שיצא לפני סינון הכפילויות, ולכן היחיד
+  /// בלי שום הגנת replay: מי שקלט דטגרמת פרידה אחת ושידר אותה שוב ושוב
+  /// הוציא את החברותא מרשימת המחוברים בכל פעם, והמסך של הצד השני היה
+  /// מהבהב בין "מסונכרן" ל"ממתין לחברותא". הוא אינו צריך לדעת את הקוד.
+  group('הודעת פרידה', () {
+    test('bye מוציא את החברותא מהמחוברים', () async {
+      await transport.deliver(incoming(sequence: 1));
+      expect(hub.snapshot()['peers'], hasLength(1));
+
+      await transport.deliver(
+        incoming(type: SyncMessageType.farewell, location: null, sequence: 2),
+      );
+      expect(hub.snapshot()['peers'], isEmpty);
+    });
+
+    test('שידור חוזר של אותה bye אינו מוציא שוב', () async {
+      await transport.deliver(incoming(sequence: 1));
+      final bye = incoming(
+        type: SyncMessageType.farewell,
+        location: null,
+        sequence: 2,
+      );
+      await transport.deliver(bye);
+      expect(hub.snapshot()['peers'], isEmpty);
+
+      // החברותא חזרה, והתוקף משדר מחדש את אותה דטגרמת פרידה.
+      await transport.deliver(incoming(sequence: 3));
+      expect(hub.snapshot()['peers'], hasLength(1));
+      await transport.deliver(bye);
+      expect(
+        hub.snapshot()['peers'],
+        hasLength(1),
+        reason: 'הודעה כפולה, ולכן נזרקת כמו כל הודעה כפולה',
+      );
+    });
+  });
+
+  /// מנות של אותו שידור נבנות באותה מילישנייה עם מונה עולה, ולכן היפוך
+  /// סדר של שתי מנות נראה לסינן הכפילויות כהודעה כפולה — והמנה
+  /// הראשונה, שנים-עשר ספרים, נזרקה בשלמותה ולא חזרה.
+  test('שתי מנות שולחן שהגיעו בסדר הפוך — שתיהן נכנסות', () async {
+    await hub.publishLocalDesk(const [], canClose: true);
+    final stamp = now.millisecondsSinceEpoch;
+    final ts = now.millisecondsSinceEpoch;
+
+    await transport.deliver(
+      incoming(
+        type: SyncMessageType.desk,
+        location: null,
+        sequence: 2,
+        timestampMs: ts,
+        entries: [DeskEntry(bookId: 'שני', stamp: stamp, by: 'חברותא')],
+      ),
+    );
+    await transport.deliver(
+      incoming(
+        type: SyncMessageType.desk,
+        location: null,
+        sequence: 1,
+        timestampMs: ts,
+        entries: [DeskEntry(bookId: 'ראשון', stamp: stamp, by: 'חברותא')],
+      ),
+    );
+
+    expect(
+      hub.deskPlan().open.map((e) => e.bookId).toSet(),
+      {'ראשון', 'שני'},
+    );
+  });
+
+  /// כל שולח חדש מייצר רשומה, שידור שולחן מלא ושידור נוכחות בתשובה —
+  /// כלומר רשימה בלי גבול היא גם זיכרון בלי גבול וגם הגדלת תעבורה 1:1.
+  test('רשימת המחוברים אינה גדלה בלי גבול', () async {
+    for (var i = 0; i < maxPeers + 20; i++) {
+      await transport.deliver(
+        incoming(senderId: 'peer${i.toString().padLeft(12, '0')}'),
+      );
+    }
+    expect(hub.snapshot()['peers'], hasLength(maxPeers));
+  });
+
+  /// "להשאיר פתוח" סימן את הספר, והסימון נמחק רק כשהחברותא פותחת אותו
+  /// מחדש. לכן ספר שהמשתמש סגר בעצמו ופתח שוב לא שודר יותר לעולם וגם
+  /// לא הוצע להעברה — כלומר נעשה בלתי-משותף עד החלפת חדר.
+  test('ספר שסירבתי לסגור וסגרתי בעצמי חוזר להיות משותף', () async {
+    DeskEntry local(String id) => DeskEntry(bookId: id, stamp: 0, by: 'x');
+
+    await hub.publishLocalDesk([local('ברכות')], canClose: true);
+    await hub.carryToDesk(['ברכות']);
+    await transport.deliver(
+      incoming(
+        type: SyncMessageType.desk,
+        location: null,
+        entries: [
+          DeskEntry(
+            bookId: 'ברכות',
+            stamp: now.millisecondsSinceEpoch + 60000,
+            by: 'חברותא',
+            open: false,
+          ),
+        ],
+      ),
+    );
+    hub.dismissClose('ברכות');
+
+    // המשתמש סוגר את הספר בעצמו — הסתירה נפתרה.
+    await hub.publishLocalDesk(const [], canClose: true);
+    transport.sent.clear();
+
+    // ופותח אותו שוב.
+    expect(
+      await hub.publishLocalDesk([local('ברכות')], canClose: true),
+      1,
+      reason: 'פתיחה חדשה, ולכן משודרת',
+    );
+  });
+
+  /// **המנה נמדדת בבייטים ולא בפריטים.** מנה של שנים-עשר פריטים עם שמות
+  /// ספרים אמיתיים מגיעה ל-1265 עד 1985 בייט — מעל ה-MTU — וכל fragment
+  /// שאובד על קישור בלוטות' מפיל את ההודעה כולה. אורך שם הספר אינו
+  /// חסום, ולכן ספירת פריטים לבדה אינה חוסמת כלום.
+  test('מנת שולחן אינה חורגת מ-MTU גם עם שמות ספרים אמיתיים', () async {
+    const names = [
+      'שולחן ערוך אורח חיים הלכות שבת',
+      'שו"ת אגרות משה חלק אורח חיים',
+      'ליקוטי מוהר"ן תורה נ"ד',
+      'משנה ברורה סימן שכ"ח סעיף קטן י"ד',
+      'תלמוד בבלי מסכת בבא מציעא',
+      'רמב"ם הלכות תשובה פרק שביעי',
+      'ספר החינוך מצווה תרי"ג',
+      'מסילת ישרים פרק כ"ו בקדושה',
+      'נפש החיים שער רביעי',
+      'פרי מגדים אשל אברהם',
+      'ערוך השולחן יורה דעה',
+      'קצות החושן על חושן משפט',
+      'ביאור הלכה על משנה ברורה',
+      'שערי תשובה לרבנו יונה',
+      'חובות הלבבות שער הביטחון',
+    ];
+    config.deviceName = 'המחשב של אבא בבית המדרש';
+
+    await hub.publishLocalDesk(const [], canClose: true);
+    transport.sent.clear();
+    await hub.carryToDesk(const []); // אין מה להעביר; ממשיכים בדיווח מלא
+
+    await hub.publishLocalDesk([
+      for (final name in names) DeskEntry(bookId: name, stamp: 0, by: 'x'),
+    ], canClose: true);
+    await hub.carryToDesk(names);
+
+    final chunks = transport.sent
+        .where((m) => m.type == SyncMessageType.desk)
+        .toList();
+    expect(chunks, isNotEmpty);
+
+    for (final chunk in chunks) {
+      final size = chunk.encode('חדר').length;
+      expect(
+        size,
+        lessThanOrEqualTo(1472),
+        reason: 'מנה של ${chunk.entries.length} פריטים יצאה $size בייט',
+      );
+      expect(chunk.entries.length, lessThanOrEqualTo(maxTabsPerMessage));
+    }
+
+    // ובכל זאת כל הספרים יצאו, ולא רק הראשונים.
+    final sentBooks = chunks.expand((m) => m.entries).map((e) => e.bookId);
+    expect(sentBooks.toSet(), containsAll(names));
   });
 }

@@ -620,5 +620,63 @@ void main() {
       expect((toOpen.first as Map)['i'], 3);
       expect(desk['close'], isEmpty);
     });
+
+    /// **הגרירה אחורה.** `remoteSequence` מתקדם גם בפעולת שולחן, ואילו
+    /// המיקום המרוחק דביק ואינו נמחק אחרי המסירה. לכן "המונה התקדם ויש
+    /// מיקום" הכריז על עדכון חדש גם כשהמיקום נמסר מזמן: החברותא בדף 5,
+    /// אתם התקדמתם לדף 40, היא פותחת ספר — ואתם נזרקים חזרה לדף 5.
+    test('פעולת שולחן אינה מכריזה מחדש על מיקום שנמסר', () async {
+      await baseline(const []);
+
+      // מיקום מהחברותא, ומסירה שלו לתוסף.
+      await transport.deliver(SyncMessage(
+        type: SyncMessageType.location,
+        roomHash: SyncMessage.hashRoomCode('חדר'),
+        senderId: 'חברותא',
+        senderName: 'החברותא',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        sequence: 1,
+        location: const SyncLocation(bookId: 'ברכות', index: 5),
+      ));
+      final first = await client.request(
+        'GET',
+        '/events?since=0&instance=background:x',
+      );
+      expect(first.json['hasUpdate'], isTrue);
+      final delivered = first.json['remoteSequence'] as int;
+
+      // ועכשיו פעולת שולחן בלבד: המונה מתקדם, המיקום לא.
+      await transport.deliver(SyncMessage(
+        type: SyncMessageType.desk,
+        roomHash: SyncMessage.hashRoomCode('חדר'),
+        senderId: 'חברותא',
+        senderName: 'החברותא',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        sequence: 2,
+        entries: [
+          DeskEntry(
+            bookId: 'שבת',
+            stamp: DateTime.now().millisecondsSinceEpoch,
+            by: 'חברותא',
+          ),
+        ],
+      ));
+
+      final second = await client.request(
+        'GET',
+        '/events?since=$delivered&instance=background:x',
+      );
+      expect(
+        second.json['remoteSequence'],
+        greaterThan(delivered),
+        reason: 'פעולת השולחן כן מקדמת את המונה',
+      );
+      expect(
+        second.json['hasUpdate'],
+        isFalse,
+        reason: 'אבל אין מיקום חדש לנווט אליו',
+      );
+      expect((second.json['desk'] as Map)['open'], hasLength(1));
+    });
   });
 }

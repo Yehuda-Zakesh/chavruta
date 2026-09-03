@@ -311,7 +311,171 @@ void main() {
       expect(transport.isBound, isFalse);
     });
   });
+
+  /// **המסלול המרכזי של החברותא: קישור בלוטות' שאינו מחובר.**
+  ///
+  /// אימתנו בשטח שכתובת ה-PAN כן נמנית ב-`NetworkInterface.list` אך
+  /// אינה ניתנת לקישור כל עוד היא `Tentative` (שגיאה 10049), ואת אותו
+  /// מצב יש לשני כרטיסי ה-Wi-Fi Direct הווירטואליים. `192.0.2.x`
+  /// (TEST-NET-1) הוא המקבילה הדטרמיניסטית לזה בבדיקה: כתובת חוקית
+  /// לגמרי שאין לה כרטיס, ולכן `bind` עליה נכשל בכל מכונה.
+  group('כרטיס שנמנה אך אינו ניתן לקישור', () {
+    test('שידור שלא יצא אינו הורג את סוקט הקליטה', () async {
+      final logs = <String>[];
+      final transport = LanTransport(
+        roomCodeProvider: () => 'בדיקה',
+        port: 0,
+        onLog: logs.add,
+        addressesProvider: () async => ['192.0.2.1'],
+      );
+      await transport.start();
+      expect(transport.isBound, isTrue);
+
+      // מעל הרף: קודם לכן שני שידורים כאלה סגרו את סוקט הקליטה.
+      for (var i = 0; i < deadSendThreshold + 2; i++) {
+        await transport.send(_message());
+      }
+
+      expect(
+        transport.isBound,
+        isTrue,
+        reason: 'סוקט הקליטה עבד מושלם; אין קישור, וזו תקלה אחרת לגמרי',
+      );
+      expect(transport.lastError, isNull, reason: 'ולכן אין מה לדווח כתקלה');
+      expect(
+        logs.any((line) => line.contains('הקשר לרשת נפל')),
+        isFalse,
+        reason: 'הלופ של 40 שניות שהיה כאן',
+      );
+
+      await transport.dispose();
+    });
+
+    test('כרטיס כזה מדווח כמי שאינו משדר', () async {
+      final transport = LanTransport(
+        roomCodeProvider: () => 'בדיקה',
+        port: 0,
+        addressesProvider: () async => ['192.0.2.1'],
+      );
+      await transport.start();
+      await transport.send(_message());
+
+      expect(transport.routes.map((r) => r.local), ['192.0.2.1']);
+      expect(transport.isSending('192.0.2.1'), isFalse);
+
+      await transport.dispose();
+    });
+  });
+
+  /// כרטיס שמתחבר **אחרי** עליית המתאם — קישור בלוטות' שהוקם עכשיו —
+  /// ואחר כך נופל, כמו שקורה ב-Windows בכל התעוררות משינה.
+  group('מערך הכרטיסים משתנה תוך ריצה', () {
+    test('כרטיס שנוסף נכנס למסלולים, וכרטיס שנעלם יוצא מהם', () async {
+      var addresses = <String>['192.0.2.1'];
+      final transport = LanTransport(
+        roomCodeProvider: () => 'בדיקה',
+        port: 0,
+        addressesProvider: () async => addresses,
+      );
+      await transport.start();
+      expect(transport.routes.map((r) => r.local), ['192.0.2.1']);
+
+      addresses = ['192.0.2.1', '169.254.73.204'];
+      await _expireRoutesCache();
+      await transport.send(_message());
+      expect(
+        transport.routes.map((r) => r.broadcast),
+        containsAll(['192.0.2.255', '169.254.255.255']),
+        reason: 'הכתובת החדשה קיבלה את ה-broadcast הנכון ל-/16',
+      );
+
+      addresses = ['192.0.2.1'];
+      await _expireRoutesCache();
+      await transport.send(_message());
+      expect(transport.routes.map((r) => r.local), ['192.0.2.1']);
+
+      await transport.dispose();
+    });
+
+    /// **הרגרסיה שהתיקון הזה סוגר.** `isSending` היה "נקשר פעם אי פעם"
+    /// ולא נוקה לעולם, ולכן קישור בלוטות' שעבד ואחר כך נפל המשיך להיות
+    /// מוצג כמשדר — והלשונית הכריזה "יש כאן קישור ישיר פעיל" על כרטיס
+    /// מנותק, כלומר היפוכה של הבדיקה החד-משמעית שהתיעוד מבטיח.
+    test('כרטיס שהשידור דרכו עבד ואז נפל מדווח שאינו משדר', () async {
+      // כתובת שכן ניתן לקשור עליה: הלופבק של המחשב הזה.
+      var addresses = <String>['127.0.0.1'];
+      final transport = LanTransport(
+        roomCodeProvider: () => 'בדיקה',
+        port: 0,
+        addressesProvider: () async => addresses,
+      );
+      await transport.start();
+      await transport.send(_message());
+      expect(
+        transport.isSending('127.0.0.1'),
+        isTrue,
+        reason: 'קישור שהצליח',
+      );
+
+      // הכרטיס נעלם מהמנייה — בלוטות' שנפל.
+      addresses = [];
+      await _expireRoutesCache();
+      await transport.send(_message());
+      expect(transport.isSending('127.0.0.1'), isFalse);
+
+      await transport.dispose();
+    });
+  });
+
+  group('איפוס מוני האבחון', () {
+    /// בלי האיפוס סולם ארבע האבחנות חד-כיווני לכל אורך חיי התהליך:
+    /// אחרי דטגרמה אחת ממחשב אחר, האבחנה "השידור יוצא וחוזר אך אין
+    /// הודעות ממחשב אחר" לא הייתה מוצגת שוב לעולם — וזה בדיוק המצב
+    /// אחרי שקישור הבלוטות' נופל בהתעוררות משינה.
+    test('resetDiagnostics מחזיר את המונים לאפס', () async {
+      final transport = LanTransport(
+        roomCodeProvider: () => 'בדיקה',
+        port: 0,
+        addressesProvider: () async => const [],
+      );
+      expect(await transport.start(), isTrue);
+
+      // אותה שיטה כמו בקבוצה למעלה: unicast אל פורט פרטי, ולא הסתמכות
+      // על broadcast שחוזר — שרתי בנייה מסננים אותו.
+      final prodder = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      addTearDown(prodder.close);
+      prodder.send(
+        const [1, 2, 3],
+        InternetAddress.loopbackIPv4,
+        transport.boundPort!,
+      );
+      await _waitFor(() => transport.datagramsReceived > 0);
+
+      transport.resetDiagnostics();
+      expect(transport.datagramsReceived, 0);
+      expect(transport.datagramsFromOthers, 0);
+      expect(transport.datagramsRejected, 0);
+      expect(transport.datagramsClockRejected, 0);
+      expect(transport.lastRemoteSource, isNull);
+
+      await transport.dispose();
+    });
+  });
 }
+
+/// הודעת נוכחות סתמית, לשידור בבדיקות.
+SyncMessage _message() => SyncMessage(
+  type: SyncMessageType.presence,
+  roomHash: SyncMessage.hashRoomCode('בדיקה'),
+  senderId: 'aabbccdd11223344',
+  senderName: 'בדיקה',
+  timestampMs: DateTime.now().millisecondsSinceEpoch,
+  sequence: 1,
+);
+
+/// ממתין עד שמטמון המסלולים פג, כדי שהמנייה תרוץ מחדש.
+Future<void> _expireRoutesCache() =>
+    Future<void>.delayed(targetsCacheTtl + const Duration(milliseconds: 50));
 
 /// ממתין עד ש-[condition] מתקיים, או נכשל אחרי [timeout]. ההתאוששות
 /// אסינכרונית, ולכן אין נקודה אחת ודאית לבדוק בה.

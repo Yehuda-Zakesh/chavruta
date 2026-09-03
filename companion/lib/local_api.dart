@@ -212,11 +212,19 @@ class LocalApi {
     final location = remote is Map
         ? SyncLocation.fromJson(remote['location'])
         : null;
-    final hasUpdate = sequence > since && location != null;
+    // **וגם: המיקום עצמו חייב להיות חדש.** ראו
+    // [SyncHub.hasFreshRemoteLocation] — המונה מתקדם גם בפעולת שולחן,
+    // ובלי התנאי הזה כל פעולה כזאת הייתה מכריזה מחדש על מיקום שנמסר
+    // מזמן, וגוררת את המשתמש חזרה לדף שהחברותא הייתה בו.
+    final hasUpdate =
+        sequence > since && location != null && hub.hasFreshRemoteLocation;
 
     // מסמנים כמסור רק כשהעדכון באמת נשלח לתוסף, כדי שההד שיחזור
     // ממנו — אחרי הניווט — יזוהה ולא ישודר בחזרה לחברותא.
     if (hasUpdate) hub.markHandedToPlugin(location);
+    // תוכנית שנמסרה אינה מקצרת שוב את ההמתנה הארוכה. ראו
+    // [SyncHub.hasDeskWork].
+    hub.markDeskPlanDelivered(plan);
 
     await _respondJson(request, {
       'hasUpdate': hasUpdate,

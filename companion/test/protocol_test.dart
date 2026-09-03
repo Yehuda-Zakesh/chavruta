@@ -256,6 +256,31 @@ void main() {
       expect(wire.containsKey('desk'), isFalse);
     });
 
+    /// **הגבול חל על מה שאומת, ולא על מערך החוט.** `desk` שעל החוט אינו
+    /// מכוסה בחתימה במלואו: `listFromJson` זורק פריטים פסולים בשקט, ולכן
+    /// ריפוד בפריטים פסולים אינו משנה את הצורה הקנונית ואינו שובר את
+    /// החתימה — אבל כן מגדיל את אורך המערך. כשהגבול נבדק על המערך הגולמי,
+    /// מי שקלט הודעה תקינה ושידר אותה מחדש עם ריפוד היה מפיל אותה.
+    test('ריפוד בפריטים פסולים אינו מפיל הודעה חתומה תקינה', () {
+      final good = deskMessage(
+        list: [
+          const DeskEntry(bookId: 'ברכות', stamp: 1, by: 'aabb'),
+          const DeskEntry(bookId: 'שבת', stamp: 1, by: 'aabb'),
+        ],
+      );
+      final wire = jsonDecode(utf8.decode(good.encode(room))) as Map;
+      wire['desk'] = [
+        ...(wire['desk'] as List),
+        // פריטים פסולים: `listFromJson` מדלג עליהם, ולכן הצורה הקנונית
+        // שנחתמה אינה משתנה.
+        for (var i = 0; i < maxTabsPerMessage; i++) {'b': '', 's': 1, 'w': 'x'},
+      ];
+
+      final decoded = SyncMessage.decode(utf8.encode(jsonEncode(wire)), room);
+      expect(decoded, isNotNull, reason: 'החתימה תקינה, והתוכן תקין');
+      expect(decoded!.entries.map((e) => e.bookId), ['ברכות', 'שבת']);
+    });
+
     test('הודעה עם יותר פריטים ממנה אחת נזרקת', () {
       // שולח תקין מפצל למנות; רשימה ארוכה מזה אינה באה מאיתנו. הזריקה
       // כאן היא גם מה שמונע חיתוך שקט — הודעה חתוכה הייתה נכשלת בהמשך

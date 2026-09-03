@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'config.dart';
 import 'lan_transport.dart';
@@ -24,6 +25,29 @@ const Duration engineLeaseTimeout = Duration(seconds: 45);
 
 /// תחילית מזהה המופע של מנוע שרץ ברקע. ראו [SyncHub.claimEngine].
 const String backgroundEnginePrefix = 'background';
+
+/// כל כמה זמן משודר השולחן המשותף במלואו, גם כשלא השתנה דבר.
+///
+/// **תיקון סטייה (anti-entropy), וזה הכרחי.** מנת שולחן שאבדה — וקישור
+/// בלוטות' כן מאבד מנות — הייתה משאירה את שני השולחנות **שונים לנצח**:
+/// השידור המלא נעשה רק כשנשמע עמית שאינו ברשימה, ופעימת הנוכחות כל
+/// [presenceInterval] מונעת בדיוק את זה, כי עמית פוקע רק אחרי
+/// [peerTimeout] של שקט מלא. התוצאה בשטח היא שני מחשבים שקטים ויציבים,
+/// שכל אחד מהם משוכנע שהשולחן שלו הוא השולחן.
+///
+/// הקצב איטי בכוונה: זו רשת ביטחון ולא מסלול הסנכרון. שידור מלא של
+/// שולחן ריאלי הוא מנה אחת, ומנה אבודה מתוקנת בתוך דקה.
+const Duration deskResyncInterval = Duration(seconds: 60);
+
+/// כמה זמן רשומת סגירה נשמרת בשולחן לפני שהיא נמחקת. ראו [SyncHub._pruneDesk].
+const Duration deskTombstoneTtl = Duration(hours: 1);
+
+/// התקרה על מספר המחוברים. ראו [SyncHub._handleInbound].
+///
+/// החברותא היא שני מחשבים, ומפגש חבורה הוא כמה. התקרה קיימת כדי
+/// שרשימת המחוברים לא תגדל בלי גבול מהודעות של זרים: כל שולח חדש
+/// מייצר אצלנו רשומה **ושידור נוכחות בתשובה**, כלומר יחס הגדלה 1:1.
+const int maxPeers = 12;
 
 class PeerInfo {
   PeerInfo({required this.id, required this.name, required this.lastSeenMs});
@@ -148,6 +172,16 @@ class SyncHub {
   /// גוברת עליה תמיד, גם כששני השעונים רחוקים זה מזה.
   int _lastStamp = 0;
 
+  /// הספר האחרון שנזרק בגלל חותמת חורגת, כדי לדווח פעם אחת ולא בכל
+  /// שידור מלא. ראו [_stampInWindow].
+  String? _badStampBook;
+
+  /// האם כבר דיווחנו שרשימת המחוברים מלאה. ראו [maxPeers].
+  bool _warnedPeerLimit = false;
+
+  /// מפתח תוכנית השולחן שנמסרה לתוסף לאחרונה. ראו [hasDeskWork].
+  String? _deliveredDeskPlanKey;
+
   /// מזהה המופע שמחזיק כרגע את מנוע הסנכרון, ומתי נשמע ממנו לאחרונה.
   ///
   /// לתוסף אוצריא יש שני מופעים על אותו מחשב — לשונית ורקע — ורק אחד מהם
@@ -166,6 +200,10 @@ class SyncHub {
   SyncLocation? _lastHandedToPlugin;
   int _lastHandedToPluginAtMs = 0;
 
+  /// חותמת ההודעה של העדכון המרוחק האחרון שנמסר לתוסף. ראו
+  /// [hasFreshRemoteLocation].
+  int _lastHandedRemoteMs = 0;
+
   /// המצב האחרון שנקלט מכל שולח, לזיהוי הודעות כפולות או מאוחרות.
   ///
   /// [receivedAtMs] הוא לפי השעון המקומי, ומשמש לניקוי בלבד: רשומה
@@ -177,6 +215,9 @@ class SyncHub {
   final List<Completer<void>> _waiters = [];
   Timer? _presenceTimer;
 
+  /// שידור מלא תקופתי של השולחן. ראו [deskResyncInterval].
+  Timer? _deskResyncTimer;
+
   /// רמז על חוק חומת האש (ראו `firewall_check.dart`). נקבע מבחוץ, כי
   /// הבדיקה היא הרצת תהליך חיצוני ואינה עניינו של ה-hub. `null` = לא ידוע.
   bool? firewallRule;
@@ -187,9 +228,38 @@ class SyncHub {
   ///
   /// `/events` בודק את זה לפני ההמתנה הארוכה: פעולת שולחן שהגיעה בין
   /// שתי פניות הייתה נשארת אחרת עד 25 שניות.
+  /// **תוכנית שכבר נמסרה אינה "עבודה חדשה".** בלי ההבחנה הזאת `/events`
+  /// חוזר מיד כל עוד התוכנית אינה מתרוקנת, והלולאה בתוסף רצה בקצב מלא
+  /// — HTTP וקריאות לאוצריא בלי הפסקה. לזה יש שני מסלולים יומיומיים
+  /// לגמרי: המשתמש עבר לשולחן עבודה אחר (התוסף יוצא מ-`applyDeskPlan`
+  /// בלי לבצע דבר, וה-README מבטיח שם "הסנכרון עוצר"), ומדיניות
+  /// "לשאול אותי" כשהמשתמש עוד לא ענה על ההודעה.
+  ///
+  /// המפתח נגזר מהתוכנית עצמה, ולכן כל שינוי בה — ספר שנוסף, סגירה
+  /// שהמשתמש דחה — מייצר מפתח אחר ומחזיר את הקיצור מיד. תוכנית שלא
+  /// השתנתה תישלח שוב בתום ההמתנה הארוכה, כלומר ניסיון כל 25 שניות
+  /// במקום לופ.
   bool get hasDeskWork {
     final plan = deskPlan();
-    return plan.open.isNotEmpty || plan.close.isNotEmpty;
+    if (plan.open.isEmpty && plan.close.isEmpty) return false;
+    return _deskPlanKey(plan) != _deliveredDeskPlanKey;
+  }
+
+  static String _deskPlanKey(
+    ({List<DeskEntry> open, List<DeskEntry> close}) plan,
+  ) {
+    final open = plan.open.map((e) => '${e.key}@${e.index}').toList()..sort();
+    final close = plan.close.map((e) => e.key).toList()..sort();
+    return '${open.join(',')}|${close.join(',')}';
+  }
+
+  /// מסמן שתוכנית השולחן נמסרה לתוסף. ראו [hasDeskWork].
+  void markDeskPlanDelivered(
+    ({List<DeskEntry> open, List<DeskEntry> close}) plan,
+  ) {
+    _deliveredDeskPlanKey = plan.open.isEmpty && plan.close.isEmpty
+        ? null
+        : _deskPlanKey(plan);
   }
 
   Future<void> start() async {
@@ -198,7 +268,22 @@ class SyncHub {
       presenceInterval,
       (_) => unawaited(_announcePresence()),
     );
+    // תיקון סטייה. ראו [deskResyncInterval] — בלעדיו מנה אבודה אחת
+    // משאירה את שני השולחנות שונים לנצח.
+    _deskResyncTimer = Timer.periodic(
+      deskResyncInterval,
+      (_) => unawaited(_resyncDesk()),
+    );
     if (config.isPaired) await _announcePresence();
+  }
+
+  /// משדר את השולחן במלואו, כרשת ביטחון נגד מנה שאבדה.
+  ///
+  /// רק כשיש למי לשדר: שידור לחדר ריק הוא תעבורה לחינם על קישור
+  /// בלוטות'.
+  Future<void> _resyncDesk() async {
+    if (!config.isPaired || _peers.isEmpty || _desk.isEmpty) return;
+    await _broadcastDesk();
   }
 
   /// מחליף את קוד החברותא. יוצא מהחדר הקודם בהודעת פרידה, מנקה את מצב
@@ -227,6 +312,15 @@ class SyncHub {
     _desk.clear();
     _undeliverable.clear();
     _dismissedCloses.clear();
+    // **השעון הלוגי הוא של החדר, ולכן מתאפס איתו.** בלי זה חותמת גבוהה
+    // שנשמעה בחדר הקודם — או שעון שקפץ קדימה ותוקן — נשארת ב-[_lastStamp]
+    // ומרעילה גם את החדר החדש: [_nextStamp] הוא `_lastStamp + 1`, ולכן
+    // כל פעולה שלנו תמשיך לגבור על כל פעולה של החברותא החדשה.
+    _lastStamp = 0;
+    _badStampBook = null;
+    // מוני האבחון הם של החדר הזה. ראו [LanTransport.resetDiagnostics] —
+    // בלעדיו סולם ארבע האבחנות חד-כיווני לכל אורך חיי התהליך.
+    transport.resetDiagnostics();
     _remoteSequence++;
     _wakeWaiters();
 
@@ -348,6 +442,22 @@ class SyncHub {
   void markHandedToPlugin(SyncLocation location) {
     _lastHandedToPlugin = location;
     _lastHandedToPluginAtMs = _nowMs;
+    _lastHandedRemoteMs = _remote?.timestampMs ?? 0;
+  }
+
+  /// האם יש עדכון מקום מרוחק **שטרם נמסר לתוסף**.
+  ///
+  /// ההבחנה הזאת היא מה שמונע גרירה אחורה: [_remoteSequence] מתקדם גם
+  /// באירועים שאינם מיקום — פעולת שולחן, למשל — ואילו [_remote] דביק
+  /// ואינו נמחק אחרי המסירה. לכן "המונה התקדם ויש מיקום" היה מכריז על
+  /// עדכון חדש גם כשהמיקום הוא בדיוק זה שנמסר מזמן: החברותא בדף 5,
+  /// אתם התקדמתם לדף 40, היא פותחת ספר — ואתם נזרקים חזרה לדף 5.
+  ///
+  /// ההשוואה היא על חותמת ההודעה ולא על המיקום עצמו, כי חזרה אמיתית של
+  /// החברותא לאותו דף **היא** עדכון חדש וצריכה להזיז אותנו.
+  bool get hasFreshRemoteLocation {
+    final remote = _remote;
+    return remote != null && remote.timestampMs > _lastHandedRemoteMs;
   }
 
   /// מדליק או מכבה את סנכרון **מקום הלימוד**.
@@ -384,6 +494,24 @@ class SyncHub {
     _wakeWaiters();
   }
 
+  /// מוציא מהשולחן רשומות סגירה עתיקות.
+  ///
+  /// **פריט סגור הוא מצבה (tombstone), והוא הכרחי:** בלעדיו אין דרך
+  /// להבדיל בין "החברותא פתחה ספר חדש" לבין "אני סגרתי ספר שהיה פתוח".
+  /// אבל הוא לא נמחק כאן לעולם, ולכן מפגש ארוך מגיע ל-[maxTrackedTabs]
+  /// מצבות — ומאותו רגע **כל ספר חדש שהחברותא פותחת נזרק בשקט**, בלי
+  /// שום סימן למשתמש (מונה השולחן מונה פתוחים בלבד, ולכן הלשונית מציגה
+  /// "0" בזמן שהשולחן מלא).
+  ///
+  /// המצבה נמחקת רק אחרי [deskTombstoneTtl], שהוא ארוך בהרבה מכל חלון
+  /// שבו הודעה יכולה עוד להיות בדרך או להישלח שוב בשידור המלא: מחיקה
+  /// מוקדמת מדי הייתה מחזירה לחיים ספר שהחברותא סגרה.
+  void _pruneDesk() {
+    if (_desk.length < maxTrackedTabs) return;
+    final cutoff = _nowMs - deskTombstoneTtl.inMilliseconds;
+    _desk.removeWhere((_, entry) => !entry.open && entry.stamp < cutoff);
+  }
+
   /// חותמת חדשה לפעולה שנעשית כאן. ראו [_lastStamp].
   int _nextStamp() {
     final wall = _nowMs;
@@ -394,7 +522,28 @@ class SyncHub {
   /// מיישר את השעון הלוגי אחרי חותמת ששמענו, כדי שהתשובה שלנו תגבר
   /// עליה גם אם השעון של החברותא מקדים את שלנו.
   void _observeStamp(int stamp) {
+    if (!_stampInWindow(stamp)) return;
     if (stamp > _lastStamp) _lastStamp = stamp;
+  }
+
+  /// האם חותמת פריט סבירה, כלומר בתוך חלון הסבילות שהפרוטוקול מרשה
+  /// לשעונים ([freshnessWindow]).
+  ///
+  /// **בלי השער הזה עמית אחד מרעיל את השעון הלוגי לנצח.** חותמת הפריט
+  /// (`s`) אינה מאומתת בשום מקום אחר: `DeskEntry.fromJson` מקבל כל
+  /// מספר אי-שלילי, ובדיקת הטריות ב-`SyncMessage.decode` חלה על `ts`
+  /// של המעטפת בלבד. פריט אחד עם חותמת של עשר שנים קדימה היה מקדם את
+  /// [_lastStamp] לאותו מקום, ומאותו רגע **כל** פעולה אמיתית של החברותא
+  /// מפסידה לו בהכרעה — הספר נתקע במצבו, והצד השני מושתק בשקט מוחלט.
+  /// מכיוון ש-[_nextStamp] הוא `_lastStamp + 1`, ההרעלה נדבקת גם לכל
+  /// פעולה שלנו־עצמנו, וגם לחדר הבא (ראו את האיפוס ב-[setRoom]).
+  ///
+  /// החלון הוא אותו חלון של הפרוטוקול, ולא הדוק ממנו: שני מחשבים
+  /// שהשעונים שלהם רחוקים בארבע דקות הם מצב **נתמך**, והחותמות שלהם
+  /// רחוקות באותה מידה.
+  bool _stampInWindow(int stamp) {
+    if (stamp < 0) return false;
+    return (stamp - _nowMs).abs() <= freshnessWindow.inMilliseconds;
   }
 
   /// התוסף מדווח מה פתוח כאן עכשיו, ומה הוא לא הצליח לפתוח.
@@ -419,6 +568,11 @@ class SyncHub {
       ..removeWhere((key) => localTabs.any((tab) => tab.key == key));
 
     final previous = Map<String, DeskEntry>.from(_localTabs);
+    // **כל מה שדווח, גם מעל התקרה.** [_localTabs] נחתך ל-[maxTrackedTabs]
+    // ואילו [previous] מכיל את הדיווח הקודם במלואו, ולכן ספר שנפל מעבר
+    // לתקרה היה נראה למטה כספר שנעלם — כלומר מדווח לחברותא כ**סגירה**,
+    // ונסגר אצלה בפועל.
+    final reported = {for (final tab in localTabs) tab.key};
     _localTabs
       ..clear()
       ..addEntries(
@@ -458,8 +612,13 @@ class SyncHub {
     // בספרייה שלנו מעולם לא היה כאן, וסגירה שלו הייתה מוחקת מהשולחן
     // דווקא את מה שהיא פתחה.
     for (final key in previous.keys) {
-      if (_localTabs.containsKey(key)) continue;
+      if (reported.contains(key)) continue;
       final current = _desk[key];
+      // **הספר נסגר כאן, ולכן אין עוד סירוב סגירה לזכור.** בלי זה
+      // [_dismissedCloses] היה נשאר לנצח: הספר לא היה משודר עוד לעולם
+      // (ראו את החריג למעלה) וגם לא היה מוצע להעברה, כלומר "להשאיר
+      // פתוח" הפך אותו לבלתי-משותף עד החלפת חדר או הפעלה מחדש.
+      _dismissedCloses.remove(key);
       if (current == null || !current.open) continue;
       operations.add(
         DeskEntry(
@@ -562,17 +721,37 @@ class SyncHub {
     await _sendDesk(_desk.values.toList());
   }
 
-  /// שולח פריטי שולחן במנות שאינן חורגות מ-[maxTabsPerMessage].
+  /// שולח פריטי שולחן במנות שאינן חורגות מ-[maxTabsPerMessage] פריטים
+  /// **ולא מ-[maxDeskPayloadBytes] בייטים**.
+  ///
+  /// הגבול בבייטים הוא העיקר: מנה של שנים-עשר פריטים עם שמות ספרים
+  /// אמיתיים מגיעה ל-1265 עד 1985 בייט, כלומר מעל ה-MTU — וכל fragment
+  /// שאובד על קישור בלוטות' מפיל את ההודעה **כולה**. אורך שם הספר אינו
+  /// חסום, ולכן ספירת פריטים לבדה אינה חוסמת כלום.
   Future<void> _sendDesk(List<DeskEntry> entries) async {
-    for (var start = 0; start < entries.length; start += maxTabsPerMessage) {
-      final end = start + maxTabsPerMessage;
-      final chunk = entries.sublist(
-        start,
-        end > entries.length ? entries.length : end,
-      );
+    var index = 0;
+    while (index < entries.length) {
+      final chunk = <DeskEntry>[];
+      var bytes = _deskEnvelopeBytes;
+      while (index < entries.length && chunk.length < maxTabsPerMessage) {
+        final size = _entryBytes(entries[index]);
+        // פריט בודד שחורג נשלח בכל זאת — אין דרך לפצל פריט.
+        if (chunk.isNotEmpty && bytes + size > maxDeskPayloadBytes) break;
+        chunk.add(entries[index]);
+        bytes += size;
+        index++;
+      }
       await transport.send(_buildMessage(SyncMessageType.desk, entries: chunk));
     }
   }
+
+  /// אומדן הבייטים של המעטפת: השדות הקבועים, החתימה, ושם המכשיר.
+  /// שמרני בכוונה — עדיף מנה קטנה מדי ממנה שמתפצלת.
+  int get _deskEnvelopeBytes =>
+      200 + utf8.encode(config.deviceName).length;
+
+  int _entryBytes(DeskEntry entry) =>
+      utf8.encode(jsonEncode(entry.toJson())).length + 1;
 
   /// ממזג פריטים שהגיעו מהחברותא לתוך השולחן המשותף.
   ///
@@ -581,7 +760,21 @@ class SyncHub {
   /// והודעה שאבדה מתוקנת בשידור המלא הבא.
   void _mergeRemoteDesk(List<DeskEntry> entries) {
     var changed = false;
+    _pruneDesk();
     for (final entry in entries) {
+      // **חותמת חורגת נזרקת, ולא רק "אינה מקדמת את השעון".** פריט כזה
+      // גובר על כל פעולה אמיתית לנצח, ולכן מיזוג שלו היה נועל את הספר
+      // במצבו לתמיד. ראו [_stampInWindow].
+      if (!_stampInWindow(entry.stamp)) {
+        if (_badStampBook != entry.key) {
+          _badStampBook = entry.key;
+          onLog?.call(
+            'פריט שולחן נזרק: החותמת של "${entry.key}" חורגת מחלון '
+            'הסבילות. בדקו את השעה בשני המחשבים.',
+          );
+        }
+        continue;
+      }
       _observeStamp(entry.stamp);
       final current = _desk[entry.key];
       if (current != null && !current.supersededBy(entry)) continue;
@@ -622,27 +815,71 @@ class SyncHub {
     // הודעה שלנו שחזרה מהרשת: broadcast חוזר גם אל השולח.
     if (message.senderId == config.deviceId) return;
 
+    // הודעה כפולה או מאוחרת. השוואת חותמת הזמן מטפלת בחברותא שהופעלה
+    // מחדש והמונה שלה חזר לאפס.
+    //
+    // **הסינון קודם לטיפול ב-`bye`, ובכוונה.** קודם לכן `bye` יצאה כאן
+    // ב-`return` לפני הסינון, ולכן היא הייתה סוג ההודעה היחיד בלי שום
+    // הגנת replay: מי שקלט דטגרמת פרידה אחת ושידר אותה מחדש כל שנייה
+    // הוציא את החברותא מרשימת המחוברים שוב ושוב, והמסך של הצד השני
+    // היה מהבהב בין "מחובר" ל"ממתין לחברותא" במשך חלון הטריות כולו.
+    // הוא אינו צריך לדעת את הקוד בשביל זה — רק לקלוט ולשדר.
+    //
+    // **והודעת שולחן פטורה מהסינון.** מנות של אותו שידור נבנות באותה
+    // מילישנייה עם מונה עולה, ולכן היפוך סדר של שתי מנות נראה כאן
+    // כהודעה כפולה — והמנה הראשונה, שנים-עשר ספרים, הייתה נזרקת
+    // בשלמותה. המיזוג עצמו חסין־סדר וחסין־כפילות לכל ספר בנפרד (ראו
+    // [_mergeRemoteDesk], ההכרעה היא לפי חותמת), ולכן אין כאן מה להגן.
+    final last = _lastFromSender[message.senderId];
+    if (message.type != SyncMessageType.desk && last != null) {
+      final duplicate =
+          message.sequence == last.sequence &&
+          message.timestampMs == last.timestampMs;
+      // רשומה ישנה פירושה שולח שנדם ונשמע עכשיו מחדש — כמעט תמיד מתאם
+      // שהופעל מחדש, והמונה שלו חזר לאפס. השוואה מול הרשומה הזאת הייתה
+      // משתיקה אותו עד שהיא תפוג, כלומר חלון טריות שלם, אם השעון שלו
+      // גם תוקן מעט אחורה.
+      final recent = _nowMs - last.receivedAtMs <= peerTimeout.inMilliseconds;
+      final older =
+          message.sequence <= last.sequence &&
+          message.timestampMs <= last.timestampMs;
+      if (duplicate || (older && recent)) return;
+    }
+    // הרשומה מתקדמת בלבד: מנה מאוחרת בסדר אינה מורידה את הרף, ורק זמן
+    // הקליטה — שהניקוי נשען עליו — מתעדכן בכל מקרה.
+    final advances =
+        last == null ||
+        message.sequence > last.sequence ||
+        message.timestampMs > last.timestampMs;
+    _lastFromSender[message.senderId] = (
+      sequence: advances ? message.sequence : last.sequence,
+      timestampMs: advances ? message.timestampMs : last.timestampMs,
+      receivedAtMs: _nowMs,
+    );
+
     if (message.type == SyncMessageType.farewell) {
       if (_peers.remove(message.senderId) != null) _wakeWaiters();
       return;
     }
 
-    // הודעה כפולה או מאוחרת. השוואת חותמת הזמן מטפלת בחברותא שהופעלה
-    // מחדש והמונה שלה חזר לאפס.
-    final last = _lastFromSender[message.senderId];
-    if (last != null &&
-        message.sequence <= last.sequence &&
-        message.timestampMs <= last.timestampMs) {
-      return;
-    }
-    _lastFromSender[message.senderId] = (
-      sequence: message.sequence,
-      timestampMs: message.timestampMs,
-      receivedAtMs: _nowMs,
-    );
-
     final peer = _peers[message.senderId];
     if (peer == null) {
+      // **תקרה על רשימת המחוברים.** ראו [maxPeers]: כל שולח חדש מייצר
+      // כאן רשומה, שידור שולחן מלא ושידור נוכחות בתשובה, ולכן רשימה
+      // בלי גבול היא גם זיכרון בלי גבול וגם הגדלת תעבורה ביחס 1:1.
+      // מנקים קודם פוקעים, כדי שהתקרה תחסום רק חדר שבאמת עמוס.
+      if (_peers.length >= maxPeers) {
+        _prunePeers();
+        if (_peers.length >= maxPeers) {
+          if (!_warnedPeerLimit) {
+            _warnedPeerLimit = true;
+            onLog?.call(
+              'רשימת המחוברים הגיעה ל-$maxPeers; מתעלם ממכשירים נוספים.',
+            );
+          }
+          return;
+        }
+      }
       _peers[message.senderId] = PeerInfo(
         id: message.senderId,
         name: message.senderName,
@@ -690,9 +927,17 @@ class SyncHub {
 
   void _prunePeers() {
     final now = _nowMs;
+    final before = _peers.length;
     _peers.removeWhere(
       (_, peer) => peer.lastSeenMs < now - peerTimeout.inMilliseconds,
     );
+    // **פקיעה היא שינוי מצב, ולכן מעירה את הממתינים.** בלי זה הלשונית
+    // ממשיכה להציג חברותא שהתנתקה עד שההמתנה הארוכה תפוג מעצמה, כלומר
+    // עוד 25 שניות שבהן המסך אומר "מסונכרן" ואין אף אחד.
+    if (_peers.length != before) {
+      _warnedPeerLimit = false;
+      _wakeWaiters();
+    }
     // רשומות הכפילות נמחקות מאוחר יותר מהמחוברים עצמם, ובכוונה: כל עוד
     // הודעה בגיל הזה עדיין יכולה להתקבל, הרשומה היא מה שמונע קליטה
     // חוזרת שלה. מעבר ל-freshnessWindow אין מה לשמור.
@@ -739,6 +984,10 @@ class SyncHub {
       'datagramsReceived': transport.datagramsReceived,
       'datagramsFromOthers': transport.datagramsFromOthers,
       'datagramsRejected': transport.datagramsRejected,
+      // דחיות שנבעו מפער שעונים בלבד. מופרדות מ-`datagramsRejected` כדי
+      // שהאבחנה לא תאשים את הקוד: הודעה שנדחתה על זמן כבר עברה אימות
+      // חתימה, כלומר הקוד **כן** זהה בשני הצדדים.
+      'datagramsClockRejected': transport.datagramsClockRejected,
       'lastRemoteSource': transport.lastRemoteSource,
       // `sending: false` = כרטיס שנמנה אך מעולם לא יצא ממנו שידור. זה מצבם
       // הרגיל של Wi-Fi Direct ו-Bluetooth PAN שאין בצדם אף אחד, ובלי השדה
@@ -772,6 +1021,7 @@ class SyncHub {
 
   Future<void> dispose() async {
     _presenceTimer?.cancel();
+    _deskResyncTimer?.cancel();
     if (config.isPaired) {
       await transport.send(_buildMessage(SyncMessageType.farewell));
     }

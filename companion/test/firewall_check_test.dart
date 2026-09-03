@@ -8,7 +8,7 @@ const _path =
     r'C:\Users\זאב לונטל\AppData\Local\Programs\Chavruta\ChavrutaCompanion.exe';
 
 /// פלט netsh מקוצר, בסגנון השורות האמיתי, עבור נתיבי ה-exe שנמסרו.
-String _netshOutput(List<String> programs) {
+String _netshOutput(List<String> programs, {String? action}) {
   final buffer = StringBuffer('\nRule Name:  Chavruta Companion (UDP-In)\n');
   for (final program in programs) {
     buffer.writeln('Enabled:                              Yes');
@@ -16,6 +16,9 @@ String _netshOutput(List<String> programs) {
     buffer.writeln('Program:                              $program');
     buffer.writeln('Protocol:                             UDP');
     buffer.writeln('LocalPort:                            45870');
+    if (action != null) {
+      buffer.writeln('Action:                               $action');
+    }
     buffer.writeln();
   }
   return buffer.toString();
@@ -86,6 +89,40 @@ void main() {
         ),
         isFalse,
       );
+    });
+
+    /// חוק **חוסם** אינו היתר, ו-Windows אף מעריך חסימה לפני היתר.
+    /// זה בדיוק מה שקורה למי שלחץ "ביטול" בחלון האישור: Windows יוצר
+    /// לו חוקי Block ל-exe, והבדיקה הכריזה עליהם כהיתר קיים — כלומר
+    /// האזהרה נעלמה דווקא כשחומת האש באמת חוסמת.
+    test('חוק חוסם אינו נחשב היתר', () {
+      final bytes = utf8.encode(_netshOutput([_path], action: 'Block'));
+      expect(netshOutputMentionsPath(bytes, _path), isFalse);
+    });
+
+    test('חוסם ומתיר יחד — חסימה מכריעה, כמו ב-Windows', () {
+      final bytes = utf8.encode(
+        _netshOutput([_path], action: 'Allow') +
+            _netshOutput([_path], action: 'Block'),
+      );
+      expect(netshOutputMentionsPath(bytes, _path), isFalse);
+    });
+
+    test('חוק חוסם לנתיב אחר אינו פוגע בהיתר שלנו', () {
+      final bytes = utf8.encode(
+        _netshOutput([_path], action: 'Allow') +
+            _netshOutput(['C:/other/app.exe'], action: 'Block'),
+      );
+      expect(netshOutputMentionsPath(bytes, _path), isTrue);
+    });
+
+    /// הספק ממשיך ליפול לצד "יש היתר": בחלונות בשפה אחרת התווית וערכה
+    /// מתורגמים, ואז אין כאן מה לפרש — ואזהרת שווא גרועה משתיקה.
+    test('תווית Action מתורגמת — הספק נופל לצד ההיתר', () {
+      final bytes = utf8.encode(
+        _netshOutput([_path], action: 'Block').replaceAll('Action:', 'Aktion:'),
+      );
+      expect(netshOutputMentionsPath(bytes, _path), isTrue);
     });
   });
 }

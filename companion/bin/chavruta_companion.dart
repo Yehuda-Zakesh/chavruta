@@ -109,6 +109,22 @@ _Args? _parseArgs(List<String> argv) {
 }
 
 Future<void> main(List<String> argv) async {
+  // **כל מסלול הריצה עטוף.** הסנכרון בנוי על טיימרים ועל `unawaited`
+  // (שומר הסף בתעבורה, פעימת הנוכחות, תיקון הסטייה), והתפיסות בפנים הן
+  // של `SocketException` בלבד. חריגה אסינכרונית מסוג אחר שתחמוק משם
+  // מפילה את האיזולט הראשי — כלומר המתאם **נעלם**, התוסף אומר "המתאם
+  // אינו פועל", ואין ביומן שום עקבה שתסביר למה. כאן היא נרשמת, והמתאם
+  // ממשיך לרוץ: מוטב מתאם שדיווח על תקלה אחת מסנכרון שנעלם בשקט.
+  await runZonedGuarded(() => _run(argv), (error, stack) {
+    _crashLog?.call('שגיאה לא מטופלת: $error\n$stack');
+  });
+}
+
+/// היומן הפעיל, לרישום חריגות שנתפסו ב-[runZonedGuarded]. נקבע ברגע
+/// שהיומן נפתח, ולפני זה אין לאן לכתוב.
+void Function(String message)? _crashLog;
+
+Future<void> _run(List<String> argv) async {
   final args = _parseArgs(argv);
   if (args == null) return;
   // בהרצה הרגילה (דרך ChavrutaLauncher.exe) אין כאן חלון מלכתחילה, ולכן
@@ -122,6 +138,7 @@ Future<void> main(List<String> argv) async {
       : Directory(args.dataDir!);
 
   final log = await _Logger.open(storageDir, toStdout: !args.quiet);
+  _crashLog = log.call;
   log('מתאם חברותא $companionVersion מתחיל');
 
   final config = await CompanionConfig.load(storageDir: storageDir);

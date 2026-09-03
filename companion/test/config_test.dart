@@ -27,6 +27,72 @@ void main() {
         CompanionConfig.normalizeRoomCode(' דף  יומי '),
       );
     });
+
+    /// **הכשל שאין לו אבחון.** קוד עברי שהודבק מוואטסאפ או מ-Word נושא
+    /// תווי כיווניות בלתי נראים, ואז שני המחשבים מציגים על המסך קוד
+    /// זהה לחלוטין ומגיעים לחדרים שונים. הדחייה קורית ב-`decode` לפני
+    /// חישוב ה-HMAC, ולכן אף מונה אבחון אינו זז ואף אזהרה אינה מוצגת:
+    /// "ממתין לחברותא" לנצח, מול קוד שנראה נכון.
+    ///
+    /// כל התווים כתובים כאן ב-escape ולא כתווים עצמם — תו כיווניות
+    /// במקור מהפך את סדר התצוגה של השורה, ואי אפשר לבקר קוד כזה.
+    group('קוד עברי שנראה זהה על המסך מגיע לאותו חדר', () {
+      const base = 'דף יומי';
+
+      void same(String label, String typed) {
+        test(label, () {
+          expect(
+            CompanionConfig.normalizeRoomCode(typed),
+            CompanionConfig.normalizeRoomCode(base),
+          );
+        });
+      }
+
+      same('RLM בהתחלה (הדבקה מוואטסאפ)', '\u200fדף יומי');
+      same('RLM בסוף', 'דף יומי\u200f');
+      same('LRM באמצע', 'דף \u200eיומי');
+      same('RLE ו-PDF עוטפים', '\u202bדף יומי\u202c');
+      same('RLI ו-PDI עוטפים', '\u2067דף יומי\u2069');
+      same('BOM בהתחלה', '\ufeffדף יומי');
+      same('רוחב-אפס בין המלים', 'דף \u200bיומי');
+      same('NBSP במקום רווח', 'דף\u00a0יומי');
+      same('ניקוד', 'ד\u05b7ף יו\u05b9מ\u05b4י');
+      same('טעם מקרא', 'דף\u0592 יומי');
+      // שרשור מפורש, ולא escape צמוד לאות עברית: הגבול בין השניים אינו
+      // חד-משמעי לעין בעורך RTL, וכך נכתב כאן בטעות `m` לטיני במקום מ״ם.
+      same('מקף רך באמצע מלה', 'דף יו' '\u00ad' 'מי');
+    });
+
+    test('גרש וגרשיים עבריים שווים ללטיניים', () {
+      final forms = [
+        'רש"י',
+        'רש\u05f4י', // גרשיים עבריים
+        'רש\u201dי', // מרכאה מסולסלת
+      ].map(CompanionConfig.normalizeRoomCode).toSet();
+      expect(forms, hasLength(1), reason: 'שלושתם נראים זהים על המסך');
+    });
+
+    test('צורת תצוגה של שׁ שווה לאות עם הנקודה', () {
+      expect(
+        CompanionConfig.normalizeRoomCode('\ufb2aלום'),
+        CompanionConfig.normalizeRoomCode('\u05e9\u05c1לום'),
+      );
+    });
+
+    /// הנרמול אינו רשאי למחוק הבדל אמיתי: קודים שונים חייבים להישאר
+    /// חדרים שונים, אחרת הסוד היחיד שמגן על החיבור נעשה קל לניחוש.
+    test('קודים שונים נשארים שונים', () {
+      final codes = ['דף יומי', 'דףיומי', 'דף יומי אחר', 'שבת', 'מן', 'מ ן']
+          .map(CompanionConfig.normalizeRoomCode)
+          .toSet();
+      expect(codes, hasLength(6));
+    });
+
+    /// תו **נראה** שנמצא בתוך טווח הניקוד אינו ניקוד, והוא חלק מהקוד.
+    test('מקף עברי וסוף פסוק נשמרים', () {
+      expect(CompanionConfig.normalizeRoomCode('דף\u05beיומי'), 'דף\u05beיומי');
+      expect(CompanionConfig.normalizeRoomCode('דף\u05c3'), 'דף\u05c3');
+    });
   });
 
   group('load', () {

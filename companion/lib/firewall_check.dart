@@ -67,7 +67,6 @@ final _nonAscii = RegExp(r'[^\x00-\x7f]+');
 bool netshOutputMentionsPath(List<int> bytes, String path) {
   final target = path.toLowerCase();
   final asUtf8 = utf8.decode(bytes, allowMalformed: true);
-  if (asUtf8.toLowerCase().contains(target)) return true;
 
   String? asSystem;
   try {
@@ -75,9 +74,80 @@ bool netshOutputMentionsPath(List<int> bytes, String path) {
   } catch (_) {
     asSystem = null; // בייטים שאינם חוקיים בקודפייג' הזה — ממשיכים
   }
-  if (asSystem != null && asSystem.toLowerCase().contains(target)) return true;
 
-  return _mentionsAsciiAnchors(asUtf8, target);
+  // שלוש השכבות נבדקות בסדר, והראשונה שמצאה את הנתיב היא הקובעת. חשוב
+  // שההכרעה תיפול בשכבה אחת ולא תצטבר: שכבה שמצאה חוק חוסם אינה יכולה
+  // "להתבטל" בשכבה הבאה שמצאה חוק מתיר, כי שתיהן קוראות את אותו פלט.
+  for (final verdict in [
+    _verdictFor(asUtf8, target),
+    if (asSystem != null) _verdictFor(asSystem, target),
+    _verdictFor(asUtf8, target, anchorsOnly: true),
+  ]) {
+    if (verdict != _RuleVerdict.noMatch) return verdict == _RuleVerdict.allowed;
+  }
+  return false;
+}
+
+enum _RuleVerdict { noMatch, allowed, blocked }
+
+/// חוק **חוסם** מזוהה ואינו נספר כהיתר.
+///
+/// זה אינו מקרה קצה: כשהמשתמש לוחץ "ביטול" בחלון האישור של Windows,
+/// Windows יוצר חוקי **Block** לאותו exe. ו-Windows מעריך חסימה לפני
+/// היתר, ולכן מי שסירב פעם אחת ואחר כך הריץ את המתקין נשאר חסום — עם
+/// חוק היתר וחוק חסימה גם יחד. הבדיקה כאן החזירה במצב הזה "יש היתר",
+/// והאזהרה נעלמה דווקא כשחומת האש באמת חוסמת.
+///
+/// **הספק ממשיך ליפול לצד `true`:** התווית `Action` וערכה עשויים להיות
+/// מתורגמים בחלונות בשפה אחרת, ואז אין כאן מה לפרש — בלוק שלא הצלחנו
+/// לקרוא את הפעולה שלו נחשב מתיר, בדיוק כמו קודם. רק בלוק שקראנו בו
+/// במפורש "Block" נזרק.
+_RuleVerdict _verdictFor(
+  String text,
+  String target, {
+  bool anchorsOnly = false,
+}) {
+  var verdict = _RuleVerdict.noMatch;
+  for (final block in _ruleBlocks(text)) {
+    final mentions = anchorsOnly
+        ? _mentionsAsciiAnchors(block, target)
+        : block.toLowerCase().contains(target);
+    if (!mentions) continue;
+    // **חסימה מכריעה, כמו ב-Windows עצמו.** חומת האש מעריכה חוקי חסימה
+    // לפני חוקי היתר, ולכן מי שיש לו את שניהם — מי שסירב פעם אחת בחלון
+    // האישור ואחר כך הריץ את המתקין — חסום בפועל, ואין טעם לומר לו
+    // שההיתר קיים.
+    if (_isBlockingRule(block)) return _RuleVerdict.blocked;
+    verdict = _RuleVerdict.allowed;
+  }
+  return verdict;
+}
+
+/// חוקי netsh, מופרדים בשורות ריקות. הפרדה לפי שורה ריקה ולא לפי
+/// `Rule Name:` — התווית מתורגמת, שורה ריקה לא.
+Iterable<String> _ruleBlocks(String text) {
+  final blocks = <String>[];
+  final current = <String>[];
+  for (final line in const LineSplitter().convert(text)) {
+    if (line.trim().isEmpty) {
+      if (current.isNotEmpty) {
+        blocks.add(current.join('\n'));
+        current.clear();
+      }
+      continue;
+    }
+    current.add(line);
+  }
+  if (current.isNotEmpty) blocks.add(current.join('\n'));
+  return blocks;
+}
+
+final _actionLine = RegExp(r'^\s*action\s*:\s*(\S+)', multiLine: true);
+
+bool _isBlockingRule(String block) {
+  final match = _actionLine.firstMatch(block.toLowerCase());
+  if (match == null) return false; // לא ידוע — ראו [_hasAllowingRuleFor]
+  return match.group(1) == 'block';
 }
 
 /// חיפוש שברי האסקי של [target] לפי הסדר, בתוך שורה אחת של הפלט.

@@ -722,6 +722,59 @@ const SyncEngine = (function () {
     }
   }
 
+  /**
+   * מבצע ניווט בעקבות עדכון מקום שהגיע מהחברותא.
+   *
+   * **ההד שיחזור מהניווט הזה כן מדווח למתאם, ובכוונה:** המתאם מזהה אותו
+   * בעצמו (חלון ההד שב-`markHandedToPlugin`) ואינו משדר אותו בחזרה
+   * לחברותא, אבל כן לומד מתוכו איפה אנחנו נמצאים עכשיו. חסימה כאן הייתה
+   * משאירה את "המקום שלי" תקוע על המקום הקודם, ואת הנוכחות משדרת מיקום
+   * ישן.
+   *
+   * ספר שאינו בספרייה כאן מדווח ל-[failedBooks] בדיוק כמו ב-
+   * [applyDeskPlan], כדי ששני המסלולים לא יתריעו על אותו ספר פעמיים.
+   */
+  async function applyRemote(remote) {
+    const location = remote && remote.location;
+    if (!location || typeof location.bookId !== 'string' || location.bookId === '') {
+      return;
+    }
+
+    const here = await currentLocation();
+    if (here && here.bookId === location.bookId && here.index === location.index) {
+      return;
+    }
+
+    let opened = false;
+    try {
+      const res = await Otzaria.call('reader.openBook', {
+        bookId: location.bookId,
+        index: typeof location.index === 'number' ? location.index : 0,
+        navigateToPositionIfReused: true,
+      });
+      opened = !!(res && res.success && res.data !== false);
+    } catch (e) {
+      opened = false;
+    }
+
+    if (opened) {
+      delete failedBooks[location.bookId];
+      if (missingBook === location.bookId) missingBook = null;
+      return;
+    }
+
+    // הספר אינו קיים בספרייה של המחשב הזה — מצב רגיל בין ספריות שונות,
+    // אבל מבחוץ הוא נראה בדיוק כמו סנכרון שהפסיק לעבוד. לכן אומרים.
+    failedBooks[location.bookId] = true;
+    const message = 'החברותא נמצאת בספר "' + location.bookId +
+      '", והוא אינו בספרייה שלך — הסנכרון ימשיך בספר הבא.';
+    if (location.bookId !== missingBook) {
+      missingBook = location.bookId;
+      notifyUser(message);
+    }
+    setStatus({ connected: true, error: message, state: status.state, owner: owner });
+  }
+
   /** האם הלולאה הזאת עדיין הפעילה. ראו [loopToken]. */
   function current(token) {
     return running && token === loopToken;
