@@ -239,10 +239,13 @@ class _Logger {
       await dir.create(recursive: true);
       final path = '${dir.path}${Platform.pathSeparator}companion.log';
       final file = File(path);
-      if (await file.exists() && await file.length() > maxLogBytes) {
-        await file.delete();
-      }
-      sink = file.openWrite(mode: FileMode.append);
+      // **קיצוץ בפתיחה, ולא מחיקה.** מחיקה נכשלת בחלונות כשמישהו אחר
+      // מחזיק את הקובץ פתוח — מופע מתאם שני שתפס פורט אחר בטווח, או
+      // חלון שמציג את הלוג — והכישלון היה נתפס למטה ומשאיר את **כל**
+      // ההרצה בלי יומן, בדיוק בהרצה שיש בה מה לאבחן. `FileMode.write`
+      // מקצץ את הקובץ הקיים בלי לדרוש למחוק אותו.
+      final tooBig = await file.exists() && await file.length() > maxLogBytes;
+      sink = file.openWrite(mode: tooBig ? FileMode.write : FileMode.append);
     } catch (_) {
       // דיסק מלא או תיקייה חסומה — עדיף מתאם שרץ בלי לוג מלא מתאם שנפל.
       sink = null;

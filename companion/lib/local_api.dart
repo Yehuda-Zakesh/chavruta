@@ -117,7 +117,7 @@ class LocalApi {
       if (_looksLikeBrowser(request)) {
         onLog?.call(
           'נדחתה פנייה מדפדפן אל ${request.uri.path} '
-          '(origin: ${request.headers.value('origin') ?? '—'})',
+          '(origin: ${request.headers['origin']?.join(', ') ?? '—'})',
         );
         await _respondJson(request, {
           'error': 'browser requests are not accepted',
@@ -199,13 +199,36 @@ class LocalApi {
   /// הכותרות האלה הן "forbidden header names" בתקן: דפדפן קובע אותן
   /// בעצמו, וקוד בדף אינו יכול להוסיף, לשנות או להסיר אותן. לכן זה
   /// סינון שאי אפשר לעקוף מתוך דף.
+  ///
+  /// **הבדיקה היא על קיום הכותרת ולא על ערכה.** `headers.value` **זורק**
+  /// כשהכותרת הופיעה יותר מפעם אחת, וזה קורה כאן בשורה הראשונה של
+  /// [_handle]: הדחייה המכוונת ב-403 הייתה הופכת ל-500 עם נוסח החריגה
+  /// בגוף התשובה, על בקשה שדווקא **צריכה** להיחסם.
   static bool _looksLikeBrowser(HttpRequest request) =>
-      browserOnlyHeaders.any((name) => request.headers.value(name) != null);
+      browserOnlyHeaders.any((name) => request.headers[name] != null);
 
   /// המתנה ארוכה לעדכון. חוזרת מיד אם יש עדכון חדש מ-[since], ואחרת
   /// ממתינה עד שמשהו קורה או עד שיפוג הזמן.
   Future<void> _handleEvents(HttpRequest request) async {
-    final since = int.tryParse(request.uri.queryParameters['since'] ?? '') ?? -1;
+    final asked = int.tryParse(request.uri.queryParameters['since'] ?? '') ?? -1;
+    // **`since` גדול מהמונה פירושו שהמונה התאפס מתחת לרגליו של הלקוח.**
+    // [SyncHub.remoteSequence] מתחיל מאפס בכל הרצה של המתאם, ואילו לולאת
+    // התוסף מחזיקה את `since` בזיכרון ואינה מאפסת אותו: `start` יוצא מיד
+    // כשהמנוע כבר רץ, וכשל התחברות רק ישן וחוזר לנסות עם אותו ערך. לכן
+    // מתאם שהופעל מחדש באמצע מפגש — קריסה, הפעלה ידנית, או מופע תקוע
+    // שנסגר — פוגש `since` מהריצה הקודמת.
+    //
+    // בלי התיקון זה מוות שקט: `remoteSequence <= since` נכון ולכן הבקשה
+    // נכנסת להמתנה של 25 שניות, ו-`sequence > since` שקר ולכן לעולם אין
+    // עדכון. הסנכרון שותק עד שיצטברו עשרות הודעות, והמסך מראה מתאם
+    // מחובר ותקין לחלוטין.
+    //
+    // אי אפשר לראות יותר ממה שקרה אי פעם, ולכן ערך כזה מטופל כ"לא ראיתי
+    // כלום": התשובה חוזרת מיד עם המצב הנוכחי, והלקוח מיישר את המונה שלו
+    // מתוכה. זה אינו יכול לבלוע עדכון — רק להחזיר עדכון שנבלע — ולקוח
+    // תקין, ש-`since` שלו לעולם אינו גדול מהמונה, אינו מושפע כלל.
+    // גרירה אחורה למקום שכבר נמסר חסומה ב-[SyncHub.hasFreshRemoteLocation].
+    final since = asked > hub.remoteSequence ? -1 : asked;
     final instance = request.uri.queryParameters['instance'] ?? '';
 
     // ההכרעה מי מסנכרן נעשית כאן, לפני ההמתנה. מופע שאינו המחזיק חוזר
@@ -296,6 +319,22 @@ class LocalApi {
       }, status: HttpStatus.badRequest);
       return;
     }
+    // **שם ספר חריג באורכו נדחה כאן ב-400, ואינו נחתך ואינו מושמט.**
+    // הוא הזהות של המיקום: מיקום עם שם חתוך אינו נפתח באף צד, והשמטה
+    // אינה אפשרית בכלל. זה גם המקום היחיד שבו הגבול מגן על משהו —
+    // המיקום הזה נשמר כמיקום המקומי ומשודר מחדש ב**כל** הודעת נוכחות,
+    // ולכן שם ענק היה הופך כל שידור ל-datagram שאינו יוצא מהסוקט (ראו
+    // [maxWireTextBytes]) והתוסף היה מכריז על תקלת רשת שאינה קיימת.
+    //
+    // הבדיקה כאן, ולא בקליטה מהחוט: שם ראו [SyncLocation.fromJson] —
+    // פסילה בקליטה מפילה את ההודעה כולה, כאן היא תשובה מפורשת ללקוח
+    // שיודע בדיוק מה נדחה ולמה.
+    if (wireTextTooLong(location.bookId)) {
+      await _respondJson(request, {
+        'error': 'bookId must be at most $maxWireTextBytes bytes',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
     // דיווח מיקום הוא סימן חיים של המנוע ממש כמו `/events`, ולכן הוא
     // מחדש את ההחזקה. `instance` אופציונלי — בלעדיו הדיווח נקלט כרגיל,
     // וכך `curl` ובדיקות ידניות ממשיכים לעבוד.
@@ -303,7 +342,15 @@ class LocalApi {
       await _rejectNotOwner(request);
       return;
     }
-    final broadcast = await hub.publishLocal(location);
+    // **תיאור חריג באורכו מושמט**, ולא נדחה: הוא לתצוגה בלבד, ולכן עדיף
+    // לסנכרן בלי כותרת מאשר לא לסנכרן. בקליטה מהחוט אסור לעשות אפילו
+    // את זה — ראו [SyncLocation.fromJson].
+    final ref = location.ref;
+    final broadcast = await hub.publishLocal(
+      ref != null && wireTextTooLong(ref)
+          ? SyncLocation(bookId: location.bookId, index: location.index)
+          : location,
+    );
     await _respondJson(request, {
       'broadcast': broadcast,
       'engineMine': true,
@@ -348,7 +395,7 @@ class LocalApi {
     final broadcast = await hub.publishLocalDesk(
       _localEntries(raw),
       canClose: body is Map && body['canClose'] == true,
-      failed: rawFailed is List ? rawFailed.whereType<String>() : const [],
+      failed: rawFailed is List ? _failedBookIds(rawFailed) : const [],
     );
     await _respondJson(request, {
       'broadcast': broadcast,
@@ -381,6 +428,26 @@ class LocalApi {
     ...hub.snapshot(),
   });
 
+  /// הספרים שהתוסף לא הצליח לפתוח כאן, מסוננים וחסומים בכמות.
+  ///
+  /// **הרשימה הזאת נכנסת לקבוצה שאינה מתרוקנת מאליה.** `_undeliverable`
+  /// ב-[SyncHub] רק מקבלת `addAll`, ופריט יוצא ממנה רק כשאותו ספר מדווח
+  /// שוב כפתוח — כלומר שם שאינו ספר אמיתי נשאר בה עד סוף החדר. בלי
+  /// הגבול כאן, קריאה אחת ל-`/tabs` עם מערך `failed` בגודל גוף הבקשה
+  /// המותר מנפחת אותה בעשרות אלפי מחרוזות, לכל אורך המפגש.
+  ///
+  /// [maxTrackedTabs] הוא הגבול הטבעי: אי אפשר להיכשל בפתיחת יותר ספרים
+  /// מאלה שהמתאם מוכן לזכור בשולחן מלכתחילה.
+  static List<String> _failedBookIds(List raw) {
+    final failed = <String>[];
+    for (final item in raw) {
+      if (item is! String || item.isEmpty || wireTextTooLong(item)) continue;
+      failed.add(item);
+      if (failed.length >= maxTrackedTabs) break;
+    }
+    return failed;
+  }
+
   /// ממיר את דיווח התוסף לפריטי שולחן.
   ///
   /// החותמת והבעלות נקבעות במתאם ולא בתוסף — הוא מדווח **עובדה**
@@ -391,7 +458,15 @@ class LocalApi {
     for (final item in raw) {
       if (item is! Map) continue;
       final bookId = item['b'];
-      if (bookId is! String || bookId.isEmpty || !seen.add(bookId)) continue;
+      // שם ספר חריג באורכו נזרק ואינו נחתך, בדיוק כמו בקליטה מהחוט: הוא
+      // היה נכנס לשולחן ומשם להודעת שולחן שאינה יוצאת מהסוקט כלל. ראו
+      // [maxWireTextBytes]. הבדיקה לפני [seen] כדי שלא ילכלך את הקבוצה.
+      if (bookId is! String ||
+          bookId.isEmpty ||
+          wireTextTooLong(bookId) ||
+          !seen.add(bookId)) {
+        continue;
+      }
       final index = item['i'];
       entries.add(
         DeskEntry(
@@ -450,6 +525,16 @@ class LocalApi {
       return;
     }
 
+    // **שתי ההעדפות נבדקות עד הסוף לפני ששומרים ולו אחת מהן.**
+    //
+    // קודם הבדיקה והשמירה היו שזורות: `syncLocation` נשמר — לקובץ
+    // ההגדרות, לא רק לזיכרון — ורק אחריו נבדק `closePolicy`. גוף אחד עם
+    // שני השדות, שבו השני פסול, החזיר 400 אחרי שהראשון כבר נכנס לתוקף.
+    // התוסף שולח את שניהם יחד ומפרש 400 כ"שום דבר לא נשמר", מצייר את
+    // המסך מחדש מהמצב שבזיכרונו — ומקום הלימוד מפסיק להסתנכרן בלי שאיש
+    // ביקש זאת, בלי סימן במסך, ובאופן ששורד הפעלה מחדש. זו בדיוק תקלת
+    // "הסנכרון לא עבד ואי אפשר לראות למה".
+    final bool? syncLocation;
     if (body.containsKey('syncLocation')) {
       final value = body['syncLocation'];
       if (value is! bool) {
@@ -458,9 +543,12 @@ class LocalApi {
         }, status: HttpStatus.badRequest);
         return;
       }
-      await hub.setSyncLocation(value);
+      syncLocation = value;
+    } else {
+      syncLocation = null;
     }
 
+    final ClosePolicy? closePolicy;
     if (body.containsKey('closePolicy')) {
       final value = body['closePolicy'];
       // ערך לא מוכר אינו נופל בשקט לברירת המחדל: מדיניות סגירה שגויה
@@ -472,8 +560,13 @@ class LocalApi {
         }, status: HttpStatus.badRequest);
         return;
       }
-      await hub.setClosePolicy(ClosePolicy.fromWire(value));
+      closePolicy = ClosePolicy.fromWire(value);
+    } else {
+      closePolicy = null;
     }
+
+    if (syncLocation != null) await hub.setSyncLocation(syncLocation);
+    if (closePolicy != null) await hub.setClosePolicy(closePolicy);
 
     await _respondJson(request, hub.snapshot());
   }
@@ -522,6 +615,16 @@ class LocalApi {
     if (name is! String) {
       await _respondJson(request, {
         'error': 'name must be a string',
+      }, status: HttpStatus.badRequest);
+      return;
+    }
+    // **שם המכשיר נוסע בכל הודעה על החוט**, ולכן שם חריג באורכו הופך כל
+    // שידור — מיקום, נוכחות, שולחן — ל-datagram שאינו יוצא מהסוקט (ראו
+    // [maxWireTextBytes]). הוא גם נשמר לדיסק, ולכן בלי הבדיקה כאן הוא
+    // שורד הפעלה מחדש ואי אפשר להיחלץ ממנו אלא בעריכת קובץ ההגדרות.
+    if (wireTextTooLong(name)) {
+      await _respondJson(request, {
+        'error': 'name must be at most $maxWireTextBytes bytes',
       }, status: HttpStatus.badRequest);
       return;
     }

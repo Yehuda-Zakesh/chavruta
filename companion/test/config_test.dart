@@ -201,7 +201,63 @@ void main() {
       // לא קרתה, כלומר גם שהאטומיות לא קרתה.
       final config = temp.config(roomCode: 'דף יומי');
       await config.save();
-      expect(await File('${config.file.path}.tmp').exists(), isFalse);
+      final leftovers = await temp.dir
+          .list()
+          .map((e) => e.path)
+          .where((p) => p.endsWith('.tmp'))
+          .toList();
+      expect(leftovers, isEmpty);
+    });
+
+    test('שם הקובץ הזמני נושא את מזהה התהליך', () async {
+      // שני מופעי מתאם יכולים לרוץ יחד, ושם זמני משותף היה מכניס חצי
+      // קובץ של האחד אל `config.json` של השני. אחרי החלפה מוצלחת לא
+      // נשארת ראיה לשם הזמני, ולכן הבדיקה חוסמת אותו: תיקייה בשם
+      // הישן — המשותף — אינה מפריעה עוד, ותיקייה בשם החדש כן.
+      final config = temp.config(roomCode: 'דף יומי');
+      await Directory('${config.file.path}.tmp').create();
+      await config.save();
+      expect(await config.file.exists(), isTrue);
+
+      await Directory('${config.file.path}.$pid.tmp').create();
+      await expectLater(config.save(), throwsA(isA<FileSystemException>()));
+    });
+
+    test('קונפיג נעול אינו נדרס, והחדר חוזר בהרצה הבאה', () async {
+      // סורק וירוסים או גיבוי מחזיקים את הקובץ לרגע בפתיחה בלעדית,
+      // והקריאה זורקת. עד עכשיו זה הוביל לקונפיג חדש **שנשמר** — כלומר
+      // נעילה של חצי שנייה מחקה את קוד החברותא ואת מזהה המכשיר לתמיד.
+      final config = temp.config(roomCode: 'דף יומי');
+      await config.save();
+
+      final handle = await config.file.open(mode: FileMode.append);
+      await handle.lock(FileLock.exclusive);
+      final CompanionConfig blocked;
+      try {
+        blocked = await CompanionConfig.load(storageDir: temp.dir);
+      } finally {
+        await handle.unlock();
+        await handle.close();
+      }
+
+      // ההרצה החסומה רצה לא מזווגת — אין לה מאין לדעת את החדר...
+      expect(blocked.isPaired, isFalse);
+      // ...אבל הקובץ נשאר כמו שהיה, ולכן ההרצה הבאה מתאוששת ממנו.
+      final again = await CompanionConfig.load(storageDir: temp.dir);
+      expect(again.deviceId, config.deviceId);
+      expect(again.roomCode, 'דף יומי');
+    });
+
+    test('קונפיג פגום כן מוחלף בחדש', () async {
+      // ההבחנה מול הבדיקה שמעליה: תוכן שאינו JSON לא ייקרא לעולם, ולכן
+      // השארתו כמו שהיא הייתה משאירה את המתאם ללא קונפיג בכל הרצה.
+      final config = temp.config(roomCode: 'דף יומי');
+      await config.save();
+      await config.file.writeAsString('{ חצי קובץ');
+
+      final fresh = await CompanionConfig.load(storageDir: temp.dir);
+      expect(fresh.isPaired, isFalse);
+      expect(jsonDecode(await config.file.readAsString()), isA<Map>());
     });
 
     test('מה שנשמר נקרא בחזרה שלם — זהות וחדר גם יחד', () async {

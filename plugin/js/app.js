@@ -788,7 +788,16 @@
   // --- פעולות --------------------------------------------------------------
 
   function notifyError(message) {
-    Otzaria.call('ui.showError', { message: message });
+    // הדחייה נבלעת כאן, כמו ב-`notifyUser` שבמנוע. זו הפונקציה שמדווחת
+    // על כשלים — גם מתוך `catch` — וכשהיא עצמה נכשלת (ההרשאה
+    // `ui.feedback` בוטלה, אוצריא עסוקה) התוצאה הייתה דחייה שאיש אינו
+    // תופס דווקא במסלול הטיפול בשגיאה.
+    try {
+      const call = Otzaria.call('ui.showError', { message: message });
+      if (call && typeof call.catch === 'function') call.catch(function () {});
+    } catch (e) {
+      // ההודעה היא שירות למשתמש; אין לה השפעה על הסנכרון.
+    }
   }
 
   async function join() {
@@ -1132,6 +1141,14 @@
       pendingCloses = [];
       renderCloseAsk();
       await refresh();
+    } catch (e) {
+      // `closeBooksByName` קוראת לאוצריא, וקריאה שאינה חוזרת בזמן זורקת.
+      // בלי התפיסה כאן הלחיצה הסתיימה בדחייה שאיש אינו תופס: הכרטיס
+      // נשאר פתוח, הכפתורים חוזרים לעבוד, והמשתמש שלחץ "כן, לסגור"
+      // אינו מקבל שום סימן שמשהו בכלל קרה.
+      notifyError(
+        'הסגירה נכשלה: ' + (e && e.message ? e.message : 'אוצריא לא ענתה')
+      );
     } finally {
       el.closeYes.disabled = false;
       el.closeNo.disabled = false;
@@ -1212,6 +1229,16 @@
       );
     }
 
+    // **המסך עולה לפני קריאת האחסון, ולא אחריה.** זו הייתה ההמתנה
+    // היחידה על מסלול העלייה של הלשונית שאין לה גבול זמן: קריאה
+    // ל-`storage.get` שאינה חוזרת — אוצריא עסוקה בעליית הספרייה, או
+    // הודעת גשר שאבדה — השאירה לשונית ריקה לגמרי, בלי מצב, בלי באנרים
+    // ובלי אף פנייה למתאם, לנצח. הקוד השמור הוא נוחות: הוא ממלא את
+    // השדה ומאפשר ל-[assertRoom] לוודא את החדר, ושניהם נבדקים שוב בכל
+    // רענון — שלוש שניות אחרי.
+    loadPendingCarry();
+    startRefreshing();
+
     try {
       const stored = await Otzaria.call('storage.get', { key: ROOM_KEY });
       if (stored && stored.success && typeof stored.data === 'string') {
@@ -1221,9 +1248,6 @@
     } catch (e) {
       // אין קוד שמור — השדה נשאר ריק.
     }
-
-    loadPendingCarry();
-    startRefreshing();
   });
 
   Otzaria.on('theme.changed', applyTheme);

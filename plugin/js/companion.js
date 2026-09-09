@@ -125,10 +125,9 @@ const Companion = (function () {
   }
 
   /**
-   * מחפש את המתאם בטווח הפורטים. מחזיר את תשובת `/hello` שלו, או `null`
-   * אם אין מתאם על המחשב הזה.
+   * סורק את הטווח. ראו [discover] — אין לקרוא לזה ישירות.
    */
-  async function discover() {
+  async function scan() {
     const stored = await readStoredPort();
     const order = stored
       ? [stored].concat(
@@ -163,6 +162,33 @@ const Companion = (function () {
     }
     port = null;
     return null;
+  }
+
+  /** סריקה שכבר רצה, אם יש. ראו [discover]. */
+  let discovering = null;
+
+  /**
+   * מחפש את המתאם בטווח הפורטים. מחזיר את תשובת `/hello` שלו, או `null`
+   * אם אין מתאם על המחשב הזה.
+   *
+   * **סריקה אחת בכל רגע.** בלשונית פתוחה יש תמיד כמה פניות במקביל —
+   * `/events` הארוכה של המנוע, הרענון שכל שלוש שניות, דיווח מקום — וכולן
+   * מוצאות `port === null` באותו רגע ופותחות סריקה משלהן. במחשב בלי
+   * מתאם זה חמישה פורטים כפול שנייה וחצי, שוב ושוב במקביל; וגרוע מכך,
+   * סריקה שנכשלת על חסימה בצד אוצריא מאפסת את `port` — כולל פורט
+   * שסריקה אחרת בדיוק מצאה, ואז הבקשה שממתינה לה יוצאת אל
+   * `http://127.0.0.1:null/`.
+   */
+  function discover() {
+    if (discovering) return discovering;
+    discovering = (async function () {
+      try {
+        return await scan();
+      } finally {
+        discovering = null;
+      }
+    })();
+    return discovering;
   }
 
   /** מריץ בקשה, ואם המתאם עוד לא נמצא — מחפש אותו קודם. */

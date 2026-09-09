@@ -141,6 +141,34 @@ void main() {
       expect(response.status, HttpStatus.badRequest);
       expect(transport.sent, isEmpty);
     });
+
+    /// הגבול על אורך נאכף כאן, בשער הכניסה, ולא בקליטה מהחוט — ראו
+    /// [SyncLocation.fromJson]. שם ספר הוא הזהות ולכן הוא נדחה ולא נחתך;
+    /// המיקום הזה היה נשמר כמיקום המקומי ומשודר מחדש בכל הודעת נוכחות.
+    test('שם ספר חריג באורכו נדחה ואינו נשמר כמיקום המקומי', () async {
+      final response = await client.request('POST', '/publish', body: {
+        'bookId': 'ב' * (maxWireTextBytes + 1),
+        'index': 12,
+      });
+
+      expect(response.status, HttpStatus.badRequest);
+      expect(transport.sent, isEmpty);
+    });
+
+    /// התיאור לעומת זאת **מושמט ולא דוחה**: הוא לתצוגה בלבד, ועדיף
+    /// לסנכרן בלי כותרת מאשר לא לסנכרן.
+    test('תיאור חריג באורכו מושמט, והמיקום עצמו משודר', () async {
+      final response = await client.request('POST', '/publish', body: {
+        'bookId': 'ברכות',
+        'index': 12,
+        'ref': 'א' * (maxWireTextBytes + 1),
+      });
+
+      expect(response.status, HttpStatus.ok);
+      expect(transport.sent, hasLength(1));
+      expect(transport.sent.single.location!.bookId, 'ברכות');
+      expect(transport.sent.single.location!.ref, isNull);
+    });
   });
 
   group('רק מחזיק המנוע מדווח', () {
@@ -384,6 +412,40 @@ void main() {
       expect(response.json['hasUpdate'], isTrue);
       final remote = response.json['remote'] as Map;
       expect((remote['location'] as Map)['bookId'], 'ברכות');
+    });
+
+    /// **המתאם עלה מחדש, והתוסף המשיך לספור מאיפה שהיה.**
+    ///
+    /// `_remoteSequence` מתחיל מאפס בכל הרצה, ואילו לולאת התוסף שומרת את
+    /// `since` בזיכרון ואינה מאפסת אותו: `start` יוצא מיד כשהמנוע כבר רץ,
+    /// וכשל התחברות רק ישן וחוזר לנסות עם אותו `since`. כלומר מתאם
+    /// שהופעל מחדש באמצע מפגש פוגש `since` גבוה מכל מה שהוא מכיר —
+    /// `remoteSequence <= since` נכון, הבקשה נכנסת להמתנה ארוכה,
+    /// ו-`sequence > since` שקר. הסנכרון מת בשקט עד שיצטברו עשרות
+    /// הודעות, והמסך מראה מתאם מחובר לגמרי.
+    test('since גבוה ממה שהמתאם מכיר אינו בולע את העדכון', () async {
+      await transport.deliver(
+        SyncMessage(
+          type: SyncMessageType.location,
+          roomHash: SyncMessage.hashRoomCode('חדר'),
+          senderId: '11223344',
+          senderName: 'החברותא',
+          timestampMs: DateTime.now().millisecondsSinceEpoch,
+          sequence: 1,
+          location: const SyncLocation(bookId: 'ברכות', index: 12),
+        ),
+      );
+      expect(hub.remoteSequence, lessThan(9999), reason: 'נקודת המוצא');
+
+      final response = await client
+          .request('GET', '/events?since=9999')
+          .timeout(const Duration(seconds: 5));
+
+      expect(response.json['hasUpdate'], isTrue);
+      expect(
+        ((response.json['remote'] as Map)['location'] as Map)['bookId'],
+        'ברכות',
+      );
     });
 
     test('בלי מיקום מרוחק אין עדכון, גם כשהמונה גדול מ-since', () async {
@@ -711,6 +773,87 @@ void main() {
       // ערך פסול אינו נבלע בשקט לברירת המחדל.
       expect(config.closePolicy, ClosePolicy.ask);
       expect(config.syncLocation, isTrue);
+    });
+
+    /// שדה פסול אחד אינו משאיר את השני שמור למחצה.
+    ///
+    /// התוסף שולח את שתי ההעדפות בגוף אחד, ומפרש 400 כ"שום דבר לא
+    /// נשמר". קודם `syncLocation` כבר נשמר לקובץ ההגדרות לפני
+    /// ש-`closePolicy` נבדק, ולכן מקום הלימוד הפסיק להסתנכרן בלי שאיש
+    /// ביקש, בלי סימן במסך, ובאופן ששורד הפעלה מחדש.
+    test('POST /settings פסול אינו משנה דבר, גם לא את השדה התקין', () async {
+      expect(config.syncLocation, isTrue, reason: 'נקודת המוצא');
+
+      final response = await client.request('POST', '/settings', body: {
+        'syncLocation': false,
+        'closePolicy': 'אולי',
+      });
+
+      expect(response.status, HttpStatus.badRequest);
+      expect(
+        config.syncLocation,
+        isTrue,
+        reason: 'השדה התקין נשמר על אף שהבקשה נדחתה',
+      );
+      expect(config.closePolicy, ClosePolicy.ask);
+    });
+
+    /// `failed` נכנס ל-`_undeliverable`, קבוצה שרק גדלה: פריט יוצא ממנה
+    /// רק כשאותו ספר מדווח שוב כפתוח כאן. בלי גבול, קריאה אחת ל-`/tabs`
+    /// עם מערך בגודל גוף הבקשה המותר משאירה בזיכרון עשרות אלפי מחרוזות
+    /// לכל אורך המפגש. הגבול הוא [maxTrackedTabs] — אי אפשר להיכשל
+    /// בפתיחת יותר ספרים מאלה שהמתאם מוכן לזכור בכלל.
+    test('רשימת הכישלונות חסומה ב-maxTrackedTabs', () async {
+      Future<void> shareShabbat() => transport.deliver(SyncMessage(
+        type: SyncMessageType.desk,
+        roomHash: SyncMessage.hashRoomCode('חדר'),
+        senderId: 'חברותא',
+        senderName: 'החברותא',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        sequence: 1,
+        entries: [
+          DeskEntry(
+            bookId: 'שבת',
+            index: 3,
+            stamp: DateTime.now().millisecondsSinceEpoch,
+            by: 'חברותא',
+          ),
+        ],
+      ));
+
+      // `since=0` ולא מספר גדול: המונה כבר התקדם, ולכן הבקשה חוזרת מיד
+      // במקום להמתין 25 שניות על תוכנית שאמורה להיות ריקה.
+      Future<List> planToOpen() async {
+        final response = await client.request(
+          'GET',
+          '/events?since=0&instance=background:x',
+        );
+        return (response.json['desk'] as Map)['open'] as List;
+      }
+
+      await baseline(const []);
+      await shareShabbat();
+
+      // מעבר לגבול: המבול נחתך, ו"שבת" — שמעבר לתקרה — אינו נשמר כלל.
+      await client.request('POST', '/tabs', body: {
+        'instance': 'background:x',
+        'tabs': [],
+        'failed': [
+          for (var i = 0; i < maxTrackedTabs; i++) 'זבל $i',
+          'שבת',
+        ],
+      });
+      final open = await planToOpen();
+      expect(open, hasLength(1), reason: 'הפריט שמעבר לתקרה נזרק');
+      expect((open.single as Map)['b'], 'שבת');
+
+      // בתוך הגבול: הכישלון כן נזכר, ו"שבת" אינו מוצע לפתיחה שוב ושוב.
+      await client.request('POST', '/tabs', body: {
+        'instance': 'background:x',
+        'tabs': [],
+        'failed': ['שבת'],
+      });
+      expect(await planToOpen(), isEmpty, reason: 'כישלון שנזכר מדכא הצעה');
     });
 
     test('GET /events מוסר את תוכנית השולחן', () async {

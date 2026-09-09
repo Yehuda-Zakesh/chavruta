@@ -26,6 +26,12 @@ enum ClosePolicy {
   };
 }
 
+/// קובץ הקונפיג קיים אך לא ניתן לקריאה עכשיו. ראו [CompanionConfig.load]:
+/// זה **אינו** קונפיג פגום, ולכן אסור להחליף אותו בחדש.
+class _Unreadable implements Exception {
+  const _Unreadable();
+}
+
 /// קונפיגורציה מתמשכת של המתאם.
 ///
 /// נשמרת ב-`%LOCALAPPDATA%\Chavruta\config.json`: זהות המכשיר (נוצרת פעם
@@ -180,7 +186,7 @@ class CompanionConfig {
     final file = File('${dir.path}${Platform.pathSeparator}config.json');
     if (await file.exists()) {
       try {
-        final json = jsonDecode(await file.readAsString());
+        final json = jsonDecode(await _readOrThrow(file));
         if (json is Map) {
           final id = json['deviceId'];
           if (id is String && id.isNotEmpty) {
@@ -200,6 +206,19 @@ class CompanionConfig {
             );
           }
         }
+      } on _Unreadable {
+        // **הקובץ קיים, ולא הצלחנו לקרוא אותו — ולכן אסור לדרוס אותו.**
+        // סורק וירוסים, גיבוי או סנכרון ענן מחזיקים אותו לרגע בפתיחה
+        // בלעדית, והקריאה זורקת. המסלול שלמטה — קונפיג חדש **שנשמר** —
+        // היה הופך נעילה של חצי שנייה למחיקה לצמיתות של קוד החברותא
+        // ושל [deviceId], כלומר בדיוק הנזק שהכתיבה האטומית נועדה למנוע.
+        // לכן ההרצה הזאת רצה לא מזווגת, הקובץ נשאר על הדיסק, וההרצה
+        // הבאה מתאוששת ממנו.
+        return CompanionConfig(
+          deviceId: _newDeviceId(),
+          deviceName: Platform.localHostname,
+          storageDir: dir,
+        );
       } catch (_) {
         // קונפיג פגום — נבנה חדש במקום להיכשל בעלייה.
       }
@@ -211,6 +230,23 @@ class CompanionConfig {
     );
     await fresh.save();
     return fresh;
+  }
+
+  /// קורא את הקונפיג, וזורק [_Unreadable] אם לא הצלחנו.
+  ///
+  /// הנעילות שמפילות קריאה בחלונות הן של עשרות מילישניות, ולכן ניסיון
+  /// שני או שלישי כמעט תמיד מצליח — וזה עדיף בהרבה על "לא הצלחתי",
+  /// שמשמעותו הרצה שלמה בלי החדר. תוכן שאינו UTF-8 תקין הוא **פגימה**
+  /// ולא נעילה, ולכן ה-`FormatException` שלו ממשיך למסלול הפגום.
+  static Future<String> _readOrThrow(File file) async {
+    for (var attempt = 0; ; attempt++) {
+      try {
+        return await file.readAsString();
+      } on FileSystemException {
+        if (attempt == 2) throw const _Unreadable();
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+      }
+    }
   }
 
   /// השמירה שרצה עכשיו, אם יש. ראו [save].
@@ -248,7 +284,15 @@ class CompanionConfig {
       if (closePolicy != ClosePolicy.ask) 'closePolicy': closePolicy.wire,
     });
 
-    final temp = File('${file.path}.tmp');
+    // **שם הקובץ הזמני נושא את מזהה התהליך.** שני מופעי מתאם יכולים
+    // לרוץ יחד — כל אחד תפס פורט אחר בטווח ה-API — ושם זמני קבוע היה
+    // משותף לשניהם: מופע אחד מקצץ וכותב בזמן שהשני עומד להחליף בשם,
+    // וההחלפה מכניסה חצי קובץ אל `config.json`. אז [load] אינו מפענח
+    // אותו, וקוד החברותא ומזהה המכשיר נעלמים — כלומר האטומיות שכל
+    // המסלול הזה נועד לה מתבטלת בדיוק במצב שהיא הכי נחוצה. בתוך מופע
+    // אחד התור ב-[save] כבר מבטיח כותב יחיד, ולכן pid מספיק — ובלי
+    // להשאיר שובל של קבצים זמניים חדשים בכל שמירה.
+    final temp = File('${file.path}.$pid.tmp');
     await temp.writeAsString(text, flush: true);
     try {
       await temp.rename(file.path);

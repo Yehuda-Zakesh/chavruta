@@ -104,6 +104,52 @@ void main() {
       expect(decoded.location!.ref, 'ברכות דף ד');
     });
 
+    /// ראו את ההערה על `ref` ב-[SyncLocation.fromJson].
+    ///
+    /// הפיתוי כאן הוא להשמיט תיאור חריג באורכו, מפני שהוא לתצוגה בלבד.
+    /// אבל `decode` חותם מחדש על ההודעה **המשוחזרת**, ולכן השמטה מפילה
+    /// את החתימה ודוחה הודעה תקינה לגמרי — ועוד סופרת אותה כדחייה
+    /// שסולם האבחון מפרש כ"קוד חדר שאינו זהה".
+    test('תיאור ארוך אינו מפיל הודעת מיקום תקינה', () {
+      final message = buildMessage(
+        location: SyncLocation(
+          bookId: 'ברכות',
+          index: 12,
+          ref: 'א' * (maxWireTextBytes + 100),
+        ),
+      );
+      final bytes = message.encode(room);
+      // דטגרמה קטנה בהרבה מכל MTU — אין שום סיבה טכנית לדחות אותה.
+      expect(bytes.length, lessThan(maxDeskPayloadBytes * 2));
+
+      final decoded = SyncMessage.decode(bytes, room);
+      expect(decoded, isNotNull, reason: 'ההודעה נדחתה בשלמותה');
+      expect(decoded!.location!.bookId, 'ברכות');
+      expect(decoded.location!.index, 12);
+    });
+
+    /// אותו לקח בדיוק, ובמקום שבו הוא כואב הרבה יותר.
+    ///
+    /// שם ספר חריג באורכו הגיע מחברותא שמריצה גרסה בלי הגבול. אם הקליטה
+    /// פוסלת אותו, `loc` המשוחזר הוא `null` בעוד השולח חתם על אובייקט —
+    /// והחתימה נופלת על ההודעה **כולה**. בהודעת נוכחות המשמעות היא
+    /// שהחברותא נעלמת מרשימת המחוברים ונראית כמי שאינה מחוברת כלל, ואילו
+    /// האבחון סופר `datagramsRejected` ואומר "הקוד אינו זהה".
+    test('שם ספר ארוך אינו מפיל הודעת נוכחות תקינה', () {
+      final message = buildMessage(
+        type: SyncMessageType.presence,
+        location: SyncLocation(
+          bookId: 'ב' * (maxWireTextBytes + 100),
+          index: 3,
+        ),
+      );
+
+      final decoded = SyncMessage.decode(message.encode(room), room);
+      expect(decoded, isNotNull, reason: 'הנוכחות נדחתה בשלמותה');
+      expect(decoded!.type, SyncMessageType.presence);
+      expect(decoded.location!.index, 3);
+    });
+
     test('נוכחות ופרידה עוברות גם בלי מיקום', () {
       for (final type in [SyncMessageType.presence, SyncMessageType.farewell]) {
         final message = buildMessage(type: type, location: null);
@@ -238,6 +284,26 @@ void main() {
       expect(decoded.entries.last.open, isFalse, reason: 'סגירה עוברת על החוט');
       expect(decoded.entries.last.stamp, 701);
       expect(decoded.entries.last.by, 'aabb');
+    });
+
+    /// ראו את הבדיקה המקבילה על `ref` ועל שם ספר בהודעת מיקום.
+    ///
+    /// כאן הנפילה שקטה עוד יותר: פריט שנפסל בקליטה נעלם מ-`entries`,
+    /// ומערך `desk` המשוחזר קצר ממה שנחתם — כלומר **כל** המנה נדחית, ולא
+    /// רק הפריט החריג. כשהפריט החריג הוא היחיד במנה, `desk` נעלם מהצורה
+    /// הקנונית לגמרי והדחייה מובטחת.
+    test('פריט עם שם ספר ארוך אינו מפיל את מנת השולחן כולה', () {
+      final longBook = 'ש' * (maxWireTextBytes + 100);
+      final message = deskMessage(
+        list: [
+          const DeskEntry(bookId: 'ברכות', index: 12, stamp: 700, by: 'aabb'),
+          DeskEntry(bookId: longBook, index: 1, stamp: 701, by: 'aabb'),
+        ],
+      );
+
+      final decoded = SyncMessage.decode(message.encode(room), room);
+      expect(decoded, isNotNull, reason: 'המנה כולה נדחתה');
+      expect(decoded!.entries.map((e) => e.bookId), ['ברכות', longBook]);
     });
 
     test('הודעת שולחן בלי אף פריט תקין נדחית', () {

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 /// המפתח שבו Windows שומר תוכנות שעולות עם המשתמש.
@@ -67,8 +68,36 @@ class StartupRegistration {
   final String _executable;
   final bool _isWindows;
 
-  static Future<ProcessResult> _defaultRunner(List<String> arguments) =>
-      Process.run('reg.exe', arguments, runInShell: false);
+  /// `add` ו-`delete` נמדדים בקוד היציאה בלבד, ולכן הם רצים ישירות: הערך
+  /// של `/d` מכיל מרכאות משלו, והעברתו דרך `cmd` היא ציטוט שאי אפשר
+  /// לסמוך עליו.
+  ///
+  /// **הפלט של `query`, לעומת זאת, נקרא — ולכן הקידוד שלו קובע.**
+  /// `reg.exe` פולט בקודפייג' של הקונסולה (862 בחלונות בעברית) ואילו
+  /// `systemEncoding` של Dart הוא קודפייג' ה-ANSI (1255); שני דברים
+  /// שונים. נתיב עם שם משתמש עברי חזר מכאן כ-`C:\Users\†€ …ˆ\...`,
+  /// וההשוואה ב-[_addFailed] לא יכלה להצליח לעולם — כלומר רישום תקין
+  /// שהמתקין כבר כתב דווח למשתמש ככישלון. `chcp 65001` הופך את הפלט
+  /// ל-UTF-8 ידוע, בדיוק כמו ב-`firewall_check.dart`. ארגומנטי ה-query
+  /// הם ASCII בלי רווחים ובלי מרכאות, ולכן אין כאן שאלת ציטוט, וקוד
+  /// היציאה של `reg.exe` הוא זה ש-`cmd /c` מחזיר.
+  static Future<ProcessResult> _defaultRunner(List<String> arguments) async {
+    if (arguments.isEmpty || arguments.first != 'query') {
+      return Process.run('reg.exe', arguments, runInShell: false);
+    }
+    final result = await Process.run(
+      'cmd',
+      ['/c', 'chcp 65001 >nul & reg.exe ${arguments.join(' ')}'],
+      stdoutEncoding: null,
+      stderrEncoding: null,
+    );
+    return ProcessResult(
+      result.pid,
+      result.exitCode,
+      utf8.decode(result.stdout as List<int>, allowMalformed: true),
+      utf8.decode(result.stderr as List<int>, allowMalformed: true),
+    );
+  }
 
   /// המצב עכשיו. קורא את הרישום בכל פעם ולא שומר במטמון: המתקין עשוי
   /// לשנות את אותו ערך תחת המתאם הרץ, ומצב שקרי במתג גרוע ממאמץ קטן.
@@ -214,11 +243,11 @@ class StartupRegistration {
 
   /// האם שורת הפקודה הרשומה מפעילה את ההתקנה הזאת.
   ///
-  /// **הפלט של `reg.exe` מגיע בקידוד הקונסולה**, ותווים שאינם ASCII
-  /// חוזרים ממנו משובשים ובלתי ניתנים לשחזור: בחלונות בעברית הנתיב
-  /// `C:\Users\זאב לונטל\...` נקרא `C:\Users\†€ …ˆ\...`. לכן השוואת
-  /// הנתיב היא **ראיה חיובית בלבד** — כשהיא מתאימה זו בוודאות ההתקנה
-  /// שלנו, וכשלא, אי אפשר להסיק ממנה דבר.
+  /// **הפלט של `reg.exe` מגיע בקידוד הקונסולה** — ראו [_defaultRunner],
+  /// שמאלץ אותו ל-UTF-8. עדיין, השוואת הנתיב היא **ראיה חיובית בלבד**:
+  /// במכונה שבה ה-`chcp` אינו נתפס (מדיניות, קונסולה חלופית) הנתיב חוזר
+  /// משובש — בחלונות בעברית `C:\Users\זאב לונטל\...` נקרא
+  /// `C:\Users\†€ …ˆ\...` — וכשההשוואה נכשלת אי אפשר להסיק ממנה דבר.
   ///
   /// ההכרעה במקרה כזה נופלת על שם הקובץ, שהוא תמיד ASCII ולכן תמיד
   /// קריא. כך "רשומה תוכנית אחרת" נאמר רק כשבאמת רשום משהו שאינו שלנו,

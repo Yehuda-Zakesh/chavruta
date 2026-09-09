@@ -292,7 +292,13 @@ const SyncEngine = (function () {
       Otzaria.call(method, args || {}),
       new Promise(function (_, reject) {
         setTimeout(function () {
-          reject(new Error(method + ' לא ענתה'));
+          // **הכשל מסומן**, כי "אוצריא איחרה" ו"אין מתודה כזאת" נראים
+          // כאן זהים לגמרי — וההחלטה שנגזרת מהם הפוכה: על איחור מנסים
+          // שוב, ועל מתודה חסרה מוותרים לתמיד. בלי הסימון הזה איחור
+          // אחד מכבה את השולחן המשותף עד סוף הריצה.
+          const error = new Error(method + ' לא ענתה');
+          error.timeout = true;
+          reject(error);
         }, API_TIMEOUT_MS);
       }),
     ]);
@@ -312,6 +318,12 @@ const SyncEngine = (function () {
       const res = await callWithTimeout('workspace.list');
       deskApi = !!(res && res.success);
     } catch (e) {
+      // **גבול זמן אינו תשובה.** אוצריא בעלייה עסוקה בטעינת הספרייה,
+      // וקריאה אחת שאיחרה הייתה קובעת כאן "אין ממשק שולחנות" לכל הריצה —
+      // `deskApi` אינו נבדק שוב לעולם — ועוד מודיעה למשתמש שגרסת אוצריא
+      // שלו אינה תומכת, בזמן שהיא כן. `null` פירושו "עוד לא ידוע",
+      // והבודק הבא ינסה שוב.
+      if (e && e.timeout) return null;
       deskApi = false;
     }
     if (!deskApi) {
@@ -366,8 +378,14 @@ const SyncEngine = (function () {
    */
   async function ensureDesk() {
     if (autoEnterDone) return;
+    // הדגל נקבע רק אחרי שידוע אם ממשק השולחנות קיים כאן. בדיקה שנכשלה
+    // על גבול זמן מחזירה `null` (ראו [probeDeskApi]), וסימון הניסיון
+    // כ"נעשה" היה שורף את ההזדמנות היחידה שיש בכל ריצה: המשתמש נשאר
+    // מחוץ לשולחן המשותף עד הפעלה מחדש, והסנכרון שותק בלי סימן.
+    const supported = await probeDeskApi();
+    if (supported === null) return;
     autoEnterDone = true;
-    if (!(await probeDeskApi())) return;
+    if (!supported) return;
     if (await inDeskWorkspace()) return;
 
     let carry = [];
@@ -567,6 +585,18 @@ const SyncEngine = (function () {
   async function applyDeskPlan(plan) {
     const toOpen = (plan && plan.open) || [];
     const toClose = (plan && plan.close) || [];
+
+    // **שאלת סגירה שאינה בתוכנית עוד היא שאלה שנענתה.** [lastCloseAsk]
+    // חוסם חזרה על אותה שאלה בכל סבב כל עוד היא פתוחה, אבל הוא לא נוקה
+    // לעולם: אחרי שהמשתמש ענה, החברותא פתחה את הספר מחדש וסגרה אותו
+    // שוב — והשאלה השנייה נבלעה בשקט. הספר נשאר פתוח כאן, המתאם ממשיך
+    // לבקש את הסגירה בכל סבב, ואיש אינו נשאל. המתאם עצמו בנוי בדיוק
+    // לחזרה הזאת: הוא מנקה את `_dismissedCloses` כשהספר נפתח מחדש.
+    //
+    // התוכנית נגזרת ואינה תור, ולכן היעדר הסגירה ממנה פירושו שהיא כבר
+    // אינה רלוונטית — הספר נסגר, נדחה, או שאינו פתוח כאן.
+    if (toClose.length === 0) lastCloseAsk = null;
+
     if (toOpen.length === 0 && toClose.length === 0) return;
     if (!(await inDeskWorkspace())) return;
 
@@ -581,6 +611,16 @@ const SyncEngine = (function () {
     }
     let changed = false;
 
+    /**
+     * האם התגלה כאן ספר חדש שאי אפשר לפתוח.
+     *
+     * גורר דיווח בפני עצמו, ולא רק יחד עם [changed]: כשכל הפתיחות
+     * נכשלו רשימת הטאבים לא השתנתה, ולכן גם הסקירה התקופתית יוצאת
+     * מוקדם על החתימה הזהה — ו-`failed` לעולם אינו מגיע למתאם. בלעדיו
+     * הספר נשאר בתוכנית לנצח, והתוסף מנסה לפתוח אותו שוב בכל סבב.
+     */
+    let newlyFailed = false;
+
     for (let i = 0; i < toOpen.length; i++) {
       const entry = toOpen[i];
       if (!entry || typeof entry.b !== 'string' || entry.b === '') continue;
@@ -589,21 +629,44 @@ const SyncEngine = (function () {
       // לפתוח ספרים על המסך של מי שכן מחזיק אותו.
       if (!owner || !running) return;
       let opened = false;
+
+      /**
+       * האם אוצריא אמרה שהספר **אינו נמצא**, להבדיל מלא ענתה.
+       *
+       * `Otzaria.call` אינה זורקת על כשל ממשק — היא מחזירה
+       * `success: false` עם קוד (`error.rate_limited`, `error.internal`,
+       * `error.unavailable`), ו-`data: false` הוא התשובה היחידה
+       * שפירושה "הספר לא נמצא". גם גבול הזמן אינו תשובה: ספר גדול
+       * נפתח לאט, ו-`reader.openBook` חוזרת רק אחרי שהוא נטען.
+       *
+       * בלי ההפרדה הזאת כל אחד משלושת אלה נרשם ב-[failedBooks] לתמיד,
+       * נשלח למתאם כ-`failed` — ושם הוא נכנס ל-`_undeliverable` ואינו
+       * מוצע עוד לעולם — ועוד מודיע למשתמש שספר שיש לו בספרייה אינו
+       * בספרייה שלו. כישלון רגעי מסתדר מאליו: התוכנית נגזרת מחדש בכל
+       * סבב, והספר יוצע שוב.
+       */
+      let missing = false;
       try {
         const res = await callWithTimeout('reader.openBook', {
           bookId: entry.b,
           index: typeof entry.i === 'number' ? entry.i : 0,
         });
         opened = !!(res && res.success && res.data !== false);
+        missing = !!(res && res.success && res.data === false);
       } catch (e) {
         opened = false;
       }
       if (opened) {
         changed = true;
         delete failedBooks[entry.b];
-      } else {
+        // אותו איפוס שיש ב-[applyRemote]: בלעדיו ספר שנפתח כאן בסוף
+        // נשאר רשום כ"אחרון שדווח כחסר", ואם הוא ייעלם מהספרייה באמת
+        // ההתראה עליו לא תישמע שוב.
+        if (missingBook === entry.b) missingBook = null;
+      } else if (missing) {
         // הספר אינו בספרייה כאן. מדווחים למתאם שלא יציע אותו שוב,
         // ואומרים למשתמש פעם אחת — זה נראה בדיוק כמו סנכרון שנתקע.
+        if (!failedBooks[entry.b]) newlyFailed = true;
         failedBooks[entry.b] = true;
         if (entry.b !== missingBook) {
           missingBook = entry.b;
@@ -633,7 +696,8 @@ const SyncEngine = (function () {
     }
 
     // מדווחים מיד, כדי שהמתאם יידע שהתוכנית בוצעה ולא יציע אותה שוב.
-    if (changed) await scanDesk(true);
+    // גם כשלא נפתח דבר: הדיווח הוא שנושא את `failed`.
+    if (changed || newlyFailed) await scanDesk(true);
   }
 
   /**
@@ -702,7 +766,11 @@ const SyncEngine = (function () {
         lastError = e && e.message ? e.message : 'קריאת הסגירה נכשלה';
         // גרסה שאינה מכירה סגירה. מפסיקים לבקש אותה, אחרת המתאם ימשיך
         // להציע את אותה סגירה בכל סבב.
-        deskApi = false;
+        //
+        // **אבל לא על גבול זמן.** `deskApi` הוא המתג של השולחן המשותף
+        // כולו — דיווח הטאבים, הפתיחות והבדיקה אם אנחנו בשולחן נשענים
+        // עליו — וסגירה אחת אטית הייתה מכבה את כולם עד סוף הריצה.
+        if (!(e && e.timeout)) deskApi = false;
         break;
       }
     }
@@ -775,6 +843,8 @@ const SyncEngine = (function () {
     if (!owner || !running) return;
 
     let opened = false;
+    /** ראו את אותו שדה ב-[applyDeskPlan]. */
+    let missing = false;
     try {
       const res = await callWithTimeout('reader.openBook', {
         bookId: location.bookId,
@@ -782,6 +852,7 @@ const SyncEngine = (function () {
         navigateToPositionIfReused: true,
       });
       opened = !!(res && res.success && res.data !== false);
+      missing = !!(res && res.success && res.data === false);
     } catch (e) {
       opened = false;
     }
@@ -791,6 +862,12 @@ const SyncEngine = (function () {
       if (missingBook === location.bookId) missingBook = null;
       return;
     }
+
+    // **כשל שאינו "הספר לא נמצא" אינו מדווח כאן כלל.** גבול זמן על ספר
+    // שנפתח לאט, או `error.internal` רגעי, היו נרשמים ב-[failedBooks]
+    // לתמיד ומודיעים למשתמש שהספר שהוא קורא בו אינו בספרייה שלו. שקט
+    // כאן עדיף: העדכון הבא של החברותא ינסה שוב.
+    if (!missing) return;
 
     // הספר אינו קיים בספרייה של המחשב הזה — מצב רגיל בין ספריות שונות,
     // אבל מבחוץ הוא נראה בדיוק כמו סנכרון שהפסיק לעבוד. לכן אומרים.
@@ -815,11 +892,21 @@ const SyncEngine = (function () {
         const state = await Companion.events(since);
         if (!current(token)) return;
         retryDelay = RETRY_MIN_MS;
-        if (typeof state.remoteSequence === 'number') since = state.remoteSequence;
 
         // מתאם מגרסה שאינה מכירה את ההחזקה אינו מחזיר `engineMine`. אז
         // מתייחסים אליו כמי שמסר לנו אותה, כלומר בדיוק ההתנהגות הקודמת.
         const mine = state.engineMine !== false;
+        // **המונה מתקדם רק אצל המחזיק.** מופע שאינו מסנכרן מקבל גם הוא
+        // את `remoteSequence` בכל תשובה, וקידום `since` אצלו היה בולע
+        // עדכונים שאיש לא נגע בהם: המחזיק נדם בלי לשחרר, הלשונית ממתינה
+        // עשר שניות בכל סבב וקולטת את המונה, וכשההחזקה עוברת אליה
+        // `remoteSequence > since` כבר שקר — אין הודעה על המקום שהחברותא
+        // עברה אליו באותן שניות, ואנחנו נשארים בדף הישן עד שהיא תזוז
+        // שוב. מסירה חוזרת של עדכון שכבר נמסר אינה סכנה כאן: המתאם
+        // חוסם אותה ב-`hasFreshRemoteLocation`.
+        if (mine && typeof state.remoteSequence === 'number') {
+          since = state.remoteSequence;
+        }
         // המתג נקרא מהמתאם ולא מזיכרון התוסף, כי מופע הרקע — שהוא בדרך
         // כלל המסנכרן — אינו רואה את מה שהמשתמש לחץ בלשונית.
         // ההעדפות נקראות מהמתאם ולא מזיכרון התוסף, כי מופע הרקע — שהוא

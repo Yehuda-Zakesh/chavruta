@@ -710,6 +710,101 @@ void main() {
       await hub.publishLocalDesk([local('ברכות')]);
       expect(broadcastBooks(), ['ברכות'], reason: 'השולחן ממשיך לעבוד');
     });
+
+    /// שולחן שהתמלא מצבות טריות. ראו `SyncHub._pruneDesk`.
+    ///
+    /// זה אינו שולחן עבודה חריג אלא מפגש רגיל: כל ספר שנפתח ונסגר כאן
+    /// משאיר מצבה, והן אינן נמחקות עד [deskTombstoneTtl]. שעה שלמה של
+    /// לימוד מגיעה ל-[maxTrackedTabs] בקלות.
+    Future<void> fillDeskWithTombstones() async {
+      final books = [
+        for (var i = 0; i < maxTrackedTabs; i++) local('ספר $i'),
+      ];
+      await baseline();
+      await hub.publishLocalDesk(books, canClose: true);
+      await hub.publishLocalDesk(const [], canClose: true);
+      transport.sent.clear();
+    }
+
+    test('שולחן מלא מצבות טריות עדיין קולט ספר חדש מהחברותא', () async {
+      await fillDeskWithTombstones();
+
+      await transport.deliver(deskFrom([
+        DeskEntry(
+          bookId: 'ספר חדש',
+          stamp: remoteStamp(),
+          by: chavrutaId,
+        ),
+      ]));
+
+      expect(
+        hub.deskPlan().open.map((e) => e.bookId),
+        contains('ספר חדש'),
+        reason: 'מצבה בת דקות אינה פוקעת, ובלי פינוי הספר נזרק בשקט',
+      );
+    });
+
+    test('פינוי מצבה מוותיק ביותר, ולא מספר שפתוח בשולחן', () async {
+      await fillDeskWithTombstones();
+      // ספר שפתוח בשולחן המשותף בזמן שהשאר מצבות.
+      await transport.deliver(deskFrom([
+        DeskEntry(bookId: 'ספר פתוח', stamp: remoteStamp(), by: chavrutaId),
+      ], sequence: 2));
+
+      await transport.deliver(deskFrom([
+        DeskEntry(bookId: 'עוד ספר', stamp: remoteStamp(1), by: chavrutaId),
+      ], sequence: 3));
+
+      final open = hub.deskPlan().open.map((e) => e.bookId);
+      expect(open, containsAll(['ספר פתוח', 'עוד ספר']));
+      // המצבה הוותיקה ביותר היא זו שפינתה את המקום.
+      expect(hub.snapshot()['deskCount'], 2);
+    });
+
+    /// ראו את הסינון בראש `SyncHub._mergeRemoteDesk`.
+    ///
+    /// הפריט החריג נעצר בכניסה לשולחן — אחרת הוא היה חוזר ויוצא בכל
+    /// שידור מלא כ-datagram שאינו יוצא מהסוקט — אבל **הפריטים התקינים
+    /// שבאותה מנה נכנסים**. זה בדיוק ההבדל מסינון בפענוח, ששם היה דוחה
+    /// את המנה כולה על החתימה.
+    test('פריט עם שם ספר חריג נעצר, והתקינים באותה מנה נכנסים', () async {
+      await baseline();
+
+      await transport.deliver(deskFrom([
+        DeskEntry(bookId: 'ברכות', stamp: remoteStamp(), by: chavrutaId),
+        DeskEntry(
+          bookId: 'ב' * (maxWireTextBytes + 1),
+          stamp: remoteStamp(1),
+          by: chavrutaId,
+        ),
+        DeskEntry(bookId: 'שבת', stamp: remoteStamp(2), by: chavrutaId),
+      ]));
+
+      expect(
+        hub.deskPlan().open.map((e) => e.bookId),
+        ['ברכות', 'שבת'],
+      );
+      expect(hub.snapshot()['deskCount'], 2);
+    });
+
+    /// ראו `SyncHub._makeDeskRoom`. בלי התנאי הזה שני שולחנות מלאים
+    /// שאינם זהים מתנגחים בכל שידור מלא: כל צד מפנה מצבה כדי לקלוט
+    /// פריט של השני, משדר, והשני עושה את אותו הדבר בכיוון ההפוך.
+    test('פריט ישן מהמצבה שהיה עליו לפנות אינו נכנס', () async {
+      await fillDeskWithTombstones();
+      final before = hub.snapshot()['deskCount'];
+
+      // חותמת נמוכה מכל מצבה שנוצרה כאן, כלומר פעולה ישנה יותר.
+      await transport.deliver(deskFrom([
+        DeskEntry(bookId: 'ספר ישן', stamp: 1, by: chavrutaId),
+      ]));
+
+      expect(
+        hub.deskPlan().open.map((e) => e.bookId),
+        isNot(contains('ספר ישן')),
+      );
+      expect(hub.snapshot()['deskCount'], before);
+    });
   });
 
   group('שני מתאמים מתכנסים', () {

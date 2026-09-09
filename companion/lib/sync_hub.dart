@@ -506,10 +506,44 @@ class SyncHub {
   /// המצבה נמחקת רק אחרי [deskTombstoneTtl], שהוא ארוך בהרבה מכל חלון
   /// שבו הודעה יכולה עוד להיות בדרך או להישלח שוב בשידור המלא: מחיקה
   /// מוקדמת מדי הייתה מחזירה לחיים ספר שהחברותא סגרה.
-  void _pruneDesk() {
-    if (_desk.length < maxTrackedTabs) return;
+  ///
+  /// **אבל ה-TTL לבדו אינו מפנה מקום, וזה הכשל שהתיעוד כאן הבטיח
+  /// שנפתר.** שעה של לימוד מגיעה ל-[maxTrackedTabs] מצבות בקלות — כל
+  /// ספר שנפתח ונסגר כאן משאיר אחת — וכולן צעירות משעה, ולכן הסריקה
+  /// לפי [deskTombstoneTtl] אינה מוחקת ולו אחת. מאותו רגע כל ספר חדש
+  /// שהחברותא פותחת נזרק בשקט, בלי שום סימן: מונה השולחן מונה פתוחים
+  /// בלבד, ולכן הלשונית מציגה מספר קטן בזמן שהשולחן מלא.
+  ///
+  /// לכן כשה-TTL לא הספיק מפנים את **המצבה הוותיקה ביותר**. זו הפעולה
+  /// הישנה ביותר בשולחן, כלומר זו שהכי פחות סביר שהיא עוד בדרך או
+  /// שמישהו עוד ממתין לה. ספר פתוח אינו מפונה לעולם — הוא מצב ולא זבל —
+  /// וגם לא מצבה שעדיין ממתינה לסגירה כאן, שהיא פעולה חיה.
+  ///
+  /// **הפינוי מותנה בכך שהנכנס חדש מהמפונה, וזה מה שמייצב אותו.** בלי
+  /// התנאי הזה שני שולחנות מלאים שאינם זהים מתנגחים בלי סוף: בכל שידור
+  /// מלא (כל [deskResyncInterval]) כל צד מפנה מצבה כדי לקלוט פריט של
+  /// הצד השני, משדר את התוצאה, והשני עושה בדיוק את אותו הדבר בכיוון
+  /// ההפוך. עם התנאי, שני הצדדים מתכנסים לאותה קבוצה — [maxTrackedTabs]
+  /// הפריטים בעלי החותמות הגבוהות ביותר — ומשם אין עוד מה להחליף.
+  ///
+  /// מחזיר האם יש מקום לפריט בחותמת [incomingStamp] בסופה.
+  bool _makeDeskRoom(int incomingStamp) {
+    if (_desk.length < maxTrackedTabs) return true;
     final cutoff = _nowMs - deskTombstoneTtl.inMilliseconds;
     _desk.removeWhere((_, entry) => !entry.open && entry.stamp < cutoff);
+    if (_desk.length < maxTrackedTabs) return true;
+
+    DeskEntry? oldest;
+    for (final entry in _desk.values) {
+      if (entry.open) continue;
+      if (_localTabs.containsKey(entry.key)) continue;
+      if (oldest == null || entry.stamp < oldest.stamp) oldest = entry;
+    }
+    // אין מה לפנות: השולחן מלא בספרים פתוחים ממש, וזו התקרה שהתיעוד
+    // של [maxTrackedTabs] מבטיח. כאן הזריקה היא ההתנהגות הנכונה.
+    if (oldest == null || oldest.stamp >= incomingStamp) return false;
+    _desk.remove(oldest.key);
+    return true;
   }
 
   /// חותמת חדשה לפעולה שנעשית כאן. ראו [_lastStamp].
@@ -760,8 +794,17 @@ class SyncHub {
   /// והודעה שאבדה מתוקנת בשידור המלא הבא.
   void _mergeRemoteDesk(List<DeskEntry> entries) {
     var changed = false;
-    _pruneDesk();
     for (final entry in entries) {
+      // **מחרוזת חריגה נעצרת כאן, בכניסה לשולחן, ולא בפענוח.** פריט
+      // שנכנס ל-[_desk] חוזר ויוצא בכל שידור מלא (ראו [_broadcastDesk]),
+      // ושם שם ספר ענק הופך את המנה ל-datagram שאינו יוצא מהסוקט:
+      // `send` מחזיר 0, [LanTransport] מפרש זאת כסוקט מת, וסנכרון תקין
+      // נראה כתקלת רשת. ראו [maxWireTextBytes].
+      //
+      // הסינון חייב להיות כאן ולא ב-`DeskEntry.fromJson`: שם הוא היה
+      // מקצר את `entries`, משנה את הצורה הקנונית שעליה נחתמה ההודעה,
+      // ודוחה בשקט את **המנה כולה** — כולל הספרים התקינים שבה.
+      if (wireTextTooLong(entry.bookId) || wireTextTooLong(entry.by)) continue;
       // **חותמת חורגת נזרקת, ולא רק "אינה מקדמת את השעון".** פריט כזה
       // גובר על כל פעולה אמיתית לנצח, ולכן מיזוג שלו היה נועל את הספר
       // במצבו לתמיד. ראו [_stampInWindow].
@@ -778,7 +821,10 @@ class SyncHub {
       _observeStamp(entry.stamp);
       final current = _desk[entry.key];
       if (current != null && !current.supersededBy(entry)) continue;
-      if (current == null && _desk.length >= maxTrackedTabs) continue;
+      // הפינוי נעשה לכל ספר חדש בנפרד, ולא פעם אחת בראש הלולאה: מנה
+      // שלמה של ספרים חדשים צריכה מקום לכולם, ופינוי יחיד היה מכניס את
+      // הראשון ומשאיר את השאר מחוץ לשולחן בדיוק כמו קודם.
+      if (current == null && !_makeDeskRoom(entry.stamp)) continue;
       _desk[entry.key] = entry;
       // ספר שנסגר ואז נפתח שוב ראוי לניסיון נוסף, גם אם בעבר לא הצלחנו
       // לפתוח אותו וגם אם המשתמש סירב לסגור אותו בפעם הקודמת.
