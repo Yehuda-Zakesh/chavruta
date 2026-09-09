@@ -1,12 +1,27 @@
 name: Release
 
-# שחרור נבנה כאן, לא במחשב של המפתח: תיוג v* מייצר את שלושת התוצרים
-# (מתאם, תוסף, מתקין) ותולה אותם ב-Release. הרצה ידנית מייצרת את אותם
-# תוצרים בלי Release, לבדיקה.
+# שחרור נבנה כאן, לא במחשב של המפתח: הרצה ידנית מקדמת את הגרסה בעצמה,
+# בונה את שלושת התוצרים (מתאם, תוסף, מתקין), ורק אחרי שהבנייה עברה היא
+# מקבעת את הגרסה ב-main, מתייגת ומפרסמת Release. תיוג v* שנדחף ביד עדיין
+# עובד, ומשחרר את הגרסה שכבר רשומה במניפסט.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      bump:
+        description: 'קידום גרסה'
+        type: choice
+        default: major
+        options:
+          - major
+          - minor
+          - patch
+          - none
+      version:
+        description: 'גרסה מדויקת (x.y.z) — עוקפת את הקידום'
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -16,33 +31,111 @@ jobs:
     name: בנייה ל-Windows
     runs-on: windows-latest
     steps:
+      # fetch-depth: 0 — הקידום צריך את כל התגים כדי לא לדרוך על אחד קיים
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
 
-      - name: גרסה מתוך המניפסט
+      - name: קביעת הגרסה
         id: version
         shell: pwsh
+        env:
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          $manifest = Get-Content plugin/manifest.json -Raw -Encoding UTF8 | ConvertFrom-Json
           # שתי גרסאות, ובכוונה: המניפסט חייב SemVer מלא — אוצריא פוסלת מניפסט
           # שאינו x.y.z, וגם pubspec של Dart דורש שלושה מספרים. הגרסה שהמשתמש
           # רואה — שם ה-Release ושם המתקין — היא מספר רץ, ולכן היא מוותרת על
           # כל האפסים המיותרים בסוף: 2.0.0 מתפרסמת כ-2. אותו כלל נמצא גם
           # ב-tool\build.ps1.
-          $version = $manifest.version
-          $display = $version -replace '(\.0)+$', ''
-          # התג חייב להתאים לאחת משתי הצורות, אחרת השחרור מבלבל.
-          if ($env:GITHUB_REF -like 'refs/tags/v*') {
-            $tag = $env:GITHUB_REF -replace '^refs/tags/v', ''
-            if ($tag -ne $version -and $tag -ne $display) {
-              throw "התג v$tag אינו תואם ל-version שבמניפסט ($version)"
-            }
+          function ConvertTo-SemVersion([string] $text) {
+            $trimmed = $text.Trim().TrimStart('v')
+            if ($trimmed -notmatch '^\d+(\.\d+){0,2}$') { return $null }
+            $parts = @($trimmed -split '\.')
+            while ($parts.Count -lt 3) { $parts += '0' }
+            return [version]($parts -join '.')
           }
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          $manifestPath = 'plugin/manifest.json'
+          $raw = Get-Content $manifestPath -Raw -Encoding UTF8
+          $manifest = $raw | ConvertFrom-Json
+          $current = ConvertTo-SemVersion $manifest.version
+          if (-not $current) { throw "version שבמניפסט אינו SemVer: $($manifest.version)" }
+
+          $bumped = $false
+          $release = $false
+
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            # תג שנדחף ביד: משחררים את מה שכבר רשום במניפסט, והתג חייב להתאים
+            $tagVersion = ConvertTo-SemVersion ($env:GITHUB_REF -replace '^refs/tags/', '')
+            if (-not $tagVersion -or $tagVersion -ne $current) {
+              throw "התג $($env:GITHUB_REF) אינו תואם ל-version שבמניפסט ($($manifest.version))"
+            }
+            $next = $current
+            $release = $true
+          }
+          elseif ($env:INPUT_VERSION) {
+            $next = ConvertTo-SemVersion $env:INPUT_VERSION
+            if (-not $next) { throw "הגרסה שבוקשה אינה x.y.z: $($env:INPUT_VERSION)" }
+            $bumped = $true
+            $release = $true
+          }
+          elseif ($env:INPUT_BUMP -eq 'none') {
+            # בנייה לבדיקה: אותם תוצרים, בלי קידום ובלי Release
+            $next = $current
+          }
+          else {
+            # הבסיס לקידום הוא הגבוה מבין המניפסט וכל התגים הקיימים. בלי זה
+            # קידום יכול לייצר תג שכבר תפוס — וזה מה שתקע שחרורים עד כה.
+            $base = $current
+            foreach ($tag in @(git tag -l 'v*')) {
+              $candidate = ConvertTo-SemVersion $tag
+              if ($candidate -and $candidate -gt $base) { $base = $candidate }
+            }
+            $patch = [math]::Max($base.Build, 0)
+            switch ($env:INPUT_BUMP) {
+              'major' { $next = [version]::new($base.Major + 1, 0, 0) }
+              'minor' { $next = [version]::new($base.Major, $base.Minor + 1, 0) }
+              'patch' { $next = [version]::new($base.Major, $base.Minor, $patch + 1) }
+              default { throw "קידום לא מוכר: $($env:INPUT_BUMP)" }
+            }
+            $bumped = $true
+            $release = $true
+          }
+
+          $semver = '{0}.{1}.{2}' -f $next.Major, $next.Minor, [math]::Max($next.Build, 0)
+          $display = $semver -replace '(\.0)+$', ''
+          $tagName = "v$display"
+
+          if ($bumped) {
+            # שתי הצורות נבדקות, כי תגים היסטוריים נכתבו גם כ-v5.0.1 וגם כ-v6
+            foreach ($existing in @($tagName, "v$semver")) {
+              if (git tag -l $existing) { throw "התג $existing כבר קיים; בחרו גרסה אחרת" }
+            }
+
+            # הגרסה נכתבת לפני הבנייה, כדי שהתוצרים יישאו את המספר החדש.
+            # כתיבה ידנית ולא ConvertTo-Json: אחרת המניפסט מאבד את הסדר שלו
+            # והעברית שבו נבלעת ב-escape.
+            $utf8 = New-Object System.Text.UTF8Encoding($false)
+            $patched = $raw -replace '(?m)^(\s*"version"\s*:\s*")[^"]*(")', "`${1}$semver`${2}"
+            [System.IO.File]::WriteAllText((Resolve-Path $manifestPath), $patched, $utf8)
+
+            $pubspecPath = 'companion/pubspec.yaml'
+            $pubspec = Get-Content $pubspecPath -Raw -Encoding UTF8
+            $pubspec = $pubspec -replace '(?m)^version:.*$', "version: $semver"
+            [System.IO.File]::WriteAllText((Resolve-Path $pubspecPath), $pubspec, $utf8)
+          }
+
+          Write-Host "גרסה: $semver (מוצגת כ-$display), תג: $tagName, קידום: $bumped, שחרור: $release"
+          "version=$semver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "display=$display" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tagName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "bumped=$($bumped.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "release=$($release.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: המתאם — בדיקות וקימפול
         shell: pwsh
@@ -101,10 +194,31 @@ jobs:
             dist/chavruta-setup-*.exe
           if-no-files-found: error
 
+      - name: קיבוע הגרסה ותיוג
+        if: steps.version.outputs.bumped == 'true'
+        shell: pwsh
+        env:
+          SEMVER: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          # מקבעים רק אחרי שהבנייה עברה, כדי ששחרור שנכשל לא ישאיר ב-main
+          # גרסה מקודמת שאין לה Release.
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add plugin/manifest.json companion/pubspec.yaml
+          git commit -m "גרסה $env:SEMVER"
+          git tag $env:TAG
+          # דחיפה עם GITHUB_TOKEN אינה מפעילה workflow נוסף, ולכן התג הזה
+          # לא יגרור ריצת Release שנייה על אותה גרסה.
+          git push origin "HEAD:$env:BRANCH"
+          git push origin $env:TAG
+
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.version.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           name: חברותא ${{ steps.version.outputs.display }}
           generate_release_notes: true
           files: |

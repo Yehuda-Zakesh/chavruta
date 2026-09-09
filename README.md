@@ -281,8 +281,17 @@ IPv4 בין שני המחשבים עובד גם הוא — Wi-Fi משותף, נ�
 - כל דחיפה ל-`main` — [CI](.github/workflows/ci.yml) מריץ analyze ובדיקות,
   ומעלה `ChavrutaCompanion.exe`, `ChavrutaLauncher.exe` ו-`.otzplugin`
   כ-artifact להורדה.
-- תג `v<גרסה>` — [Release](.github/workflows/release.yml) בונה גם את המתקין
-  ותולה את הכול ב-GitHub Release.
+- הרצה ידנית של [Release](.github/workflows/release.yml) (כפתור *Run
+  workflow*, או `gh workflow run Release -f bump=major`) — הפעולה מקדמת את
+  הגרסה בעצמה, בונה גם את המתקין, ורק אחרי שהבנייה עברה היא מקבעת את הגרסה
+  ב-`main`, מתייגת ותולה את הכול ב-GitHub Release. `bump` הוא `major`
+  (ברירת המחדל), `minor`, `patch`, או `none` לבנייה לבדיקה בלי שחרור;
+  `version` מאפשר לנקוב בגרסה מדויקת ולעקוף את הקידום.
+- תג `v<גרסה>` שנדחף ביד — משחרר את הגרסה שכבר רשומה במניפסט.
+
+אין צורך לערוך את מספר הגרסה ביד: הפעולה כותבת אותו לשני הקבצים. הבסיס
+לקידום הוא הגבוה מבין המניפסט וכל התגים הקיימים, ותג תפוס נעצר בשגיאה
+מפורשת — כדי שקידום לא ייצר תג שכבר קיים.
 
 `version` שבמניפסט חייב להיות SemVer מלא: אוצריא פוסלת מניפסט שאינו `x.y.z`,
 וגם `pubspec.yaml` של Dart דורש שלושה מספרים (הבדיקה `version_test.dart`
