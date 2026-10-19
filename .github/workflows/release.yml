@@ -128,6 +128,11 @@ jobs:
             $pubspec = Get-Content $pubspecPath -Raw -Encoding UTF8
             $pubspec = $pubspec -replace '(?m)^version:.*$', "version: $semver"
             [System.IO.File]::WriteAllText((Resolve-Path $pubspecPath), $pubspec, $utf8)
+
+            $versionPath = 'companion/lib/version.dart'
+            $versionSource = Get-Content $versionPath -Raw -Encoding UTF8
+            $versionSource = $versionSource -replace "(?m)^const String companionVersion = '[^']*';", "const String companionVersion = '$semver';"
+            [System.IO.File]::WriteAllText((Resolve-Path $versionPath), $versionSource, $utf8)
           }
 
           Write-Host "גרסה: $semver (מוצגת כ-$display), תג: $tagName, קידום: $bumped, שחרור: $release"
@@ -206,7 +211,7 @@ jobs:
           # גרסה מקודמת שאין לה Release.
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add plugin/manifest.json companion/pubspec.yaml
+          git add plugin/manifest.json companion/pubspec.yaml companion/lib/version.dart
           git commit -m "גרסה $env:SEMVER"
           git tag $env:TAG
           # דחיפה עם GITHUB_TOKEN אינה מפעילה workflow נוסף, ולכן התג הזה
