@@ -27,6 +27,17 @@ jobs:
         working-directory: companion
         run: dart test
 
+      # החיבור המרוחק מממש את הפרוטוקול ב-JS, ונבדק מול וקטורים שהמתאם
+      # מפיק (ראו companion/test/protocol_vectors_test.dart). בדיקות השילוב
+      # מול שרת relay רצות רק כש-RELAY_URL מוגדר, ולכן אינן פונות לשרת הפרוס.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: התוסף — בדיקות JS
+        working-directory: plugin-test
+        run: npm test
+
       - name: המתאם — קימפול
         shell: pwsh
         run: |

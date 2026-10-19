@@ -199,7 +199,7 @@ const SyncEngine = (function () {
     const key = keyOf(location);
     if (key === lastSentKey) return;
     try {
-      await Companion.publish(location);
+      await Link.api.publish(location);
       lastSentKey = key;
     } catch (e) {
       // המתאם אינו זמין כרגע. אין טעם לתור המתנה: המקום הנוכחי יידווח
@@ -525,7 +525,7 @@ const SyncEngine = (function () {
         })
         .join(' ');
       if (!force && key === lastDeskKey) return;
-      await Companion.publishDesk({
+      await Link.api.publishDesk({
         tabs: books.map(function (t) {
           return { b: t.b, i: t.i };
         }),
@@ -889,7 +889,7 @@ const SyncEngine = (function () {
   async function loop(token) {
     while (current(token)) {
       try {
-        const state = await Companion.events(since);
+        const state = await Link.api.events(since);
         if (!current(token)) return;
         retryDelay = RETRY_MIN_MS;
 
@@ -1037,7 +1037,7 @@ const SyncEngine = (function () {
       lastCloseAsk = null;
       failedBooks = {};
       autoEnterDone = false;
-      Companion.setInstance(instanceId || '');
+      Link.api.setInstance(instanceId || '');
 
       // המאזין מחובר רק כשהמתאם ימסור לנו את ההחזקה (ראו [setOwner]), וגם
       // הדיווח הראשוני נעשה שם: בעלייה המתאם לא תמיד כבר רץ, ודיווח
@@ -1056,7 +1056,7 @@ const SyncEngine = (function () {
       if (owner) {
         owner = false;
         try {
-          const call = Companion.releaseEngine();
+          const call = Link.api.releaseEngine();
           if (call && typeof call.catch === 'function') call.catch(function () {});
         } catch (e) {
           // אין מתאם, או שהוא נסגר. ההחזקה תפוג בצד שלו ממילא.

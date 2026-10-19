@@ -1,0 +1,82 @@
+{
+  "normalize": [
+    {
+      "raw": "דף יומי",
+      "normalized": "דף יומי",
+      "roomHash": "61d17cd975f7d984"
+    },
+    {
+      "raw": "  דף   יומי  ",
+      "normalized": "דף יומי",
+      "roomHash": "61d17cd975f7d984"
+    },
+    {
+      "raw": "‏דף יומי‏",
+      "normalized": "דף יומי",
+      "roomHash": "61d17cd975f7d984"
+    },
+    {
+      "raw": "דַּף יוֹמִי",
+      "normalized": "דף יומי",
+      "roomHash": "61d17cd975f7d984"
+    },
+    {
+      "raw": "רש״י",
+      "normalized": "רש\"י",
+      "roomHash": "ed84d7edf1543c84"
+    },
+    {
+      "raw": "רש\"י",
+      "normalized": "רש\"י",
+      "roomHash": "ed84d7edf1543c84"
+    },
+    {
+      "raw": "‘x’ “y”",
+      "normalized": "'x' \"y\"",
+      "roomHash": "ec6a331c70920096"
+    },
+    {
+      "raw": "שׁבת",
+      "normalized": "שבת",
+      "roomHash": "03f6b1b8d2495634"
+    },
+    {
+      "raw": "שׁבת",
+      "normalized": "שבת",
+      "roomHash": "03f6b1b8d2495634"
+    },
+    {
+      "raw": "Daf YOMI",
+      "normalized": "daf yomi",
+      "roomHash": "3e03bad93d4926f5"
+    },
+    {
+      "raw": "מקף־עברי",
+      "normalized": "מקף־עברי",
+      "roomHash": "36fd579c8eadaad7"
+    },
+    {
+      "raw": "a­b​c﻿d",
+      "normalized": "abcd",
+      "roomHash": "815bb50967ad7ade"
+    },
+    {
+      "raw": "emoji 😀 ok",
+      "normalized": "emoji 😀 ok",
+      "roomHash": "ba6b3742fb577eec"
+    },
+    {
+      "raw": "קוד",
+      "normalized": "קוד",
+      "roomHash": "fe1cc029cdc3021a"
+    }
+  ],
+  "code": "דף יומי",
+  "messages": [
+    "{\"v\":1,\"t\":\"loc\",\"room\":\"61d17cd975f7d984\",\"src\":\"0123456789abcdef\",\"name\":\"מחשב א\",\"ts\":1760000000000,\"seq\":7,\"loc\":{\"bookId\":\"ברכות\",\"index\":42,\"ref\":\"ברכות, דף ד.\"},\"sig\":\"abfea9e0655a5cd98befe404d67bc7ce\"}",
+    "{\"v\":1,\"t\":\"hi\",\"room\":\"61d17cd975f7d984\",\"src\":\"fedcba9876543210\",\"name\":\"שם עם \\\"מרכאות\\\" ו\\\\לוכסן\\n\",\"ts\":1760000000001,\"seq\":1,\"loc\":null,\"sig\":\"dae50b18751f911a25dbafb64459db4a\"}",
+    "{\"v\":1,\"t\":\"bye\",\"room\":\"61d17cd975f7d984\",\"src\":\"fedcba9876543210\",\"name\":\"x\\u0001\\u001f 😀\",\"ts\":1760000000002,\"seq\":2,\"loc\":null,\"sig\":\"af2545a29b17d8541580542e88cbe8d9\"}",
+    "{\"v\":1,\"t\":\"desk\",\"room\":\"61d17cd975f7d984\",\"src\":\"0123456789abcdef\",\"name\":\"מחשב א\",\"ts\":1760000000003,\"seq\":3,\"loc\":null,\"desk\":[{\"b\":\"שולחן ערוך, אורח חיים\",\"i\":5,\"o\":true,\"s\":1760000000003,\"w\":\"0123456789abcdef\"},{\"b\":\"שו״ת אגרות משה\",\"i\":0,\"o\":false,\"s\":1760000000004,\"w\":\"0123456789abcdef\"}],\"sig\":\"9d8ceb3a2b2c1f18060d299cd7f3353e\"}",
+    "{\"v\":1,\"t\":\"loc\",\"room\":\"61d17cd975f7d984\",\"src\":\"0123456789abcdef\",\"name\":\"מחשב א\",\"ts\":1760000000005,\"seq\":8,\"loc\":{\"bookId\":\"שבת\",\"index\":0,\"ref\":null},\"sig\":\"5bb0291e0bead0877637516197d45e04\"}"
+  ]
+}

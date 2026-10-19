@@ -1,0 +1,8 @@
+{
+  "name": "chavruta-plugin-tests",
+  "private": true,
+  "description": "בדיקות ה-JS של התוסף. רצות ב-Node בלי תלויות; ראו README שבתיקייה.",
+  "scripts": {
+    "test": "node --test --test-force-exit"
+  }
+}

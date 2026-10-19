@@ -63,7 +63,14 @@
     companionCard: document.getElementById('companionCard'),
     startupToggle: document.getElementById('startupToggle'),
     startupText: document.getElementById('startupText'),
+    modeLocal: document.getElementById('modeLocal'),
+    modeRemote: document.getElementById('modeRemote'),
+    howLocal: document.getElementById('howLocal'),
+    howRemote: document.getElementById('howRemote'),
   };
+
+  /** האם אוצריא במצב "מנותק" (בלי אינטרנט), לפי `plugin.boot`. */
+  let offlineMode = false;
 
   let refreshTimer = null;
   let nameDirty = false;
@@ -453,6 +460,283 @@
     }
   }
 
+  // --- החיבור המרוחק -------------------------------------------------------
+
+  /**
+   * למה אין חיבור לשרת, לפי סוג הכשל. כמו ב-[FAILURES], כל מקרה נראה
+   * אותו דבר מבחוץ, והפתרון שונה לגמרי.
+   *
+   * **"השרת זמין" ו"החברותא מחוברת" הם שני דברים**, ולכן כשל כאן הוא
+   * תמיד על השרת בלבד; מי מחובר נאמר בנפרד, לפי הודעות הנוכחות.
+   */
+  function remoteFailure(kind) {
+    if (kind === 'permission') {
+      if (offlineMode) {
+        return {
+          status: 'אוצריא במצב מנותק',
+          title: 'אוצריא מוגדרת לעבוד בלי אינטרנט',
+          html:
+            'במצב "מנותק" התוסף אינו מקבל גישה לאינטרנט, ולכן החיבור מרחוק ' +
+            'אינו זמין. החיבור הישיר (בלוטות\' או רשת מקומית) ממשיך לעבוד גם כך.',
+        };
+      }
+      return {
+        status: 'אין הרשאת אינטרנט',
+        title: 'צריך להדליק לתוסף "גישה לאינטרנט"',
+        html:
+          'החיבור מרחוק עובר דרך שרת באינטרנט, ולכן התוסף צריך את ההרשאה ' +
+          '<code>גישה לאינטרנט</code>. הדליקו אותה ב<b>הגדרות › כלים › ניהול ' +
+          'תוספים</b>, בשורת החברותא.',
+      };
+    }
+    if (kind === 'allowlist') {
+      return {
+        status: 'כתובת השרת אינה מאושרת',
+        title: 'אוצריא עדיין לא מאשרת את כתובת השרת',
+        html:
+          'כל כתובת אינטרנט של תוסף צריכה להופיע ברשימת ההיתר של אוצריא, ' +
+          'וכתובת שרת החברותא (<code>' + escapeHtml(RemoteLink.RELAY_URL) +
+          '</code>) אינה ברשימה כרגע. עד שתאושר — החיבור מרחוק לא יעבוד. ' +
+          'אוצריא טוענת את הרשימה פעם אחת בעלייה, ולכן אחרי האישור צריך ' +
+          'לסגור ולפתוח אותה מחדש. בינתיים החיבור הישיר זמין כרגיל.',
+      };
+    }
+    if (kind === 'unsupported') {
+      return {
+        status: 'גרסת אוצריא ישנה',
+        title: 'צריך לעדכן את אוצריא',
+        html:
+          'החיבור מרחוק משתמש ב-<code>network.fetchStream</code>, שקיים ' +
+          'מאוצריא <b>0.9.97</b> ומעלה.',
+      };
+    }
+    if (kind === 'http' || kind === 'invalid') {
+      return {
+        status: 'השרת עונה בשגיאה',
+        title: 'הגענו לשרת, אבל הוא לא ענה כשורה',
+        html:
+          'משהו ענה לבקשה, אבל לא בתשובה של שרת החברותא. ייתכן שהשרת ' +
+          'בתקלה רגעית, או שמסנן תוכן ברשת חוסם את הכתובת ועונה במקומו. ' +
+          'התוסף ממשיך לנסות לבד.',
+      };
+    }
+    return {
+      status: 'אין חיבור לשרת',
+      title: 'אין חיבור לשרת החברותא',
+      html:
+        'לא הצלחנו להגיע לשרת. בדקו שיש חיבור לאינטרנט; התוסף ממשיך לנסות ' +
+        'לבד, ומתחבר מחדש ברגע שהרשת חוזרת.',
+    };
+  }
+
+  /** למה אין אף אחד ברשימה, כשהשרת זמין. ראו [diagnoseEmptyWait]. */
+  function diagnoseRemoteWait(relay) {
+    if (relay && relay.clockRejected > 0) {
+      return 'הודעות מהחברותא מגיעות והקוד זהה, אך הן נדחות כי השעונים ' +
+        'של שני המחשבים רחוקים זה מזה. תקנו את השעה במחשב שסוטה.';
+    }
+    if (relay && relay.fromOthers > 0) {
+      return 'מגיעות הודעות לחדר, אבל לא מהחברותא. ודאו שהקוד זהה בדיוק בשני הצדדים.';
+    }
+    return 'השרת זמין, אבל שום הודעה מהחברותא לא הגיעה. ודאו שגם אצלה נבחר ' +
+      '"חיבור מרחוק", שהקוד זהה בדיוק, ושאוצריא פתוחה אצלה.';
+  }
+
+  /** באנרים של החיבור הישיר, שאין להם משמעות בחיבור המרוחק — ולהפך. */
+  function clearLocalBanners() {
+    ['lan', 'links', 'firewall', 'companion'].forEach(clearBanner);
+  }
+
+  function clearRemoteBanners() {
+    ['relay', 'lock'].forEach(clearBanner);
+  }
+
+  function renderRemote(state, paired, peers) {
+    clearLocalBanners();
+    const relay = state.relay || {};
+
+    if (!paired) {
+      clearBanner('relay');
+      setStatus('', 'לא מחובר לחברותא');
+      setHero(
+        'idle',
+        'לא מחובר לחברותא',
+        'הקלידו קוד — אותו קוד בדיוק אצל שני הצדדים — ולחצו התחברות.'
+      );
+    } else if (relay.state === 'error') {
+      const info = remoteFailure(relay.errorKind);
+      setStatus('off', info.status);
+      setHero('error', info.title, 'החיבור מרחוק אינו פועל כרגע.');
+      banner('relay', 'error', info.title, info.html);
+    } else if (relay.state !== 'online') {
+      clearBanner('relay');
+      setStatus('', 'מתחבר לשרת…');
+      setHero('waiting', 'מתחבר לשרת…', 'מתחברים לשרת החברותא באינטרנט.');
+    } else if (peers.length > 0) {
+      clearBanner('relay');
+      setStatus('on', 'מסונכרן · ' + peers.length + ' מחוברים');
+      setHero(
+        'linked',
+        peers.length === 1 ? 'מסונכרן עם החברותא' : 'מסונכרן · ' + peers.length + ' מחוברים',
+        'מחוברים מרחוק. כשאחד מכם עובר דף, השני עובר איתו.'
+      );
+    } else {
+      clearBanner('relay');
+      setStatus('on', 'השרת זמין · ממתין לחברותא');
+      setHero(
+        'waiting',
+        'ממתין לחברותא',
+        waitingTooLong()
+          ? diagnoseRemoteWait(relay)
+          : 'השרת זמין. ברגע שהחברותא תתחבר מרחוק עם אותו קוד, מקום הלימוד יסתנכרן.'
+      );
+    }
+
+    renderPeers(peers, state.remote);
+    el.localSpot.textContent = describeSpot(state.localLocation);
+    el.remoteSpot.textContent = state.remote
+      ? describeSpot(state.remote.location) +
+        (state.remote.fromName ? ' (' + state.remote.fromName + ')' : '')
+      : '—';
+
+    const engine = state.engine;
+    renderRemoteDiag(state, relay);
+    if (paired && engine && engine.owner === null) {
+      banner(
+        'engine',
+        'error',
+        'הסנכרון אינו פועל כרגע',
+        'אף מופע של התוסף אינו מחזיק את החיבור. פתיחה מחדש של לשונית ' +
+          'החברותא מחזירה את הסנכרון; אם זה חוזר, דווחו על כך.'
+      );
+    } else {
+      clearBanner('engine');
+    }
+
+    // בלי Web Locks אין הכרעה אטומית בין הלשונית לרקע, והמנוע רץ לפי
+    // חלוקה קבועה. זה אינו אמור לקרות באוצריא בווינדוס — ואם קורה, עדיף
+    // לדעת.
+    if (state.lockSupported === false) {
+      banner(
+        'lock',
+        '',
+        'מצב תאימות',
+        'הדפדפן של אוצריא כאן אינו תומך בנעילה בין מופעי התוסף, ולכן ' +
+          'החיבור מרחוק רץ במופע הרקע בלבד (או בלשונית, כשאין הרשאת רקע).'
+      );
+    } else {
+      clearBanner('lock');
+    }
+
+    if (typeof state.clockSkewMinutes === 'number') {
+      banner(
+        'clock',
+        'error',
+        'השעונים של שני המחשבים אינם מסונכרנים',
+        'החברותא נמצאה, אך ההודעות שלה נדחות: הפרש של כ-' +
+          Math.abs(state.clockSkewMinutes) +
+          ' דקות בין השעונים. תקנו את השעה במחשב שסוטה ' +
+          '(הגדרות ← שעה ושפה ← סנכרן כעת), והסנכרון יחזור מיד.'
+      );
+    } else {
+      clearBanner('clock');
+    }
+  }
+
+  /**
+   * שורת אבחון של החיבור המרוחק: מי מחזיק את המנוע, האם יש נעילה בין
+   * המופעים, ומתי השרת ענה לאחרונה. זה מה שבודקים כשסוגרים את הלשונית
+   * ורוצים לדעת שהרקע באמת ממשיך — ובלעדיה אין שום דרך לראות את זה.
+   */
+  function renderRemoteDiag(state, relay) {
+    const node = document.getElementById('remoteDiag');
+    if (!node) return;
+    const owner = state.engine && state.engine.owner;
+    const who = owner === 'background'
+      ? 'מופע הרקע'
+      : owner === 'foreground'
+        ? 'הלשונית'
+        : owner === 'unknown'
+          ? 'מופע אחר'
+          : 'אף מופע';
+    const seen = relay && relay.lastOkAt
+      ? 'השרת ענה ' + describeSeen(relay.lastOkAt)
+      : 'השרת טרם ענה';
+    const resets = relay && relay.serverResets ? ' · השרת התאפס ' + relay.serverResets + ' פעמים' : '';
+    node.textContent =
+      'מסנכרן כעת: ' + who +
+      ' · נעילה בין המופעים: ' + (state.lockSupported === false ? 'אינה זמינה' : 'זמינה') +
+      ' · ' + seen + resets;
+  }
+
+  /**
+   * מציג את מה ששייך לדרך החיבור שנבחרה. **דרישת המתאם מוצגת רק בחיבור
+   * הישיר** — במרוחק אין שום תוכנה להתקין, ואמירה כזאת הייתה שולחת את
+   * המשתמש להתקין דבר שאינו צריך.
+   */
+  function applyModeUi() {
+    const remote = Link.mode === 'remote';
+    if (el.modeLocal) el.modeLocal.checked = !remote;
+    if (el.modeRemote) el.modeRemote.checked = remote;
+    if (el.howLocal) el.howLocal.classList.toggle('hidden', remote);
+    if (el.howRemote) el.howRemote.classList.toggle('hidden', !remote);
+    if (remote) {
+      clearLocalBanners();
+      el.companionCard.classList.add('hidden');
+    } else {
+      clearRemoteBanners();
+    }
+    startupLoaded = false;
+    roomAssertedPort = 0;
+    trackWaiting(false, '');
+  }
+
+  /** המשתמש בחר דרך חיבור אחרת. */
+  async function changeMode(event) {
+    const wanted = event && event.target ? event.target.value : 'local';
+    if (wanted === Link.mode) return;
+    if (el.modeLocal) el.modeLocal.disabled = true;
+    if (el.modeRemote) el.modeRemote.disabled = true;
+    try {
+      await Link.setMode(wanted);
+      Otzaria.call('ui.showSuccess', {
+        message: wanted === 'remote'
+          ? 'עברתם לחיבור מרחוק. התחברו עם אותו קוד שבחרה החברותא.'
+          : 'עברתם לחיבור הישיר.',
+      });
+    } catch (e) {
+      notifyError('החלפת דרך החיבור נכשלה: ' + (e && e.message ? e.message : ''));
+    } finally {
+      if (el.modeLocal) el.modeLocal.disabled = false;
+      if (el.modeRemote) el.modeRemote.disabled = false;
+      applyModeUi();
+      await loadRoomLabel();
+      refresh();
+    }
+  }
+
+  /**
+   * הקוד שמוצג ב-chip ובשדה. בחיבור המרוחק הקוד שמור בהגדרות שלו (כבר
+   * מנורמל), ובחיבור הישיר — הקוד שהוקלד, כמו תמיד.
+   */
+  async function loadRoomLabel() {
+    try {
+      if (Link.mode === 'remote') {
+        const state = await RemoteLink.hello();
+        activeRoom = typeof state.roomLabel === 'string' ? state.roomLabel : '';
+        if (activeRoom !== '') el.roomInput.value = activeRoom;
+        return;
+      }
+      const stored = await Otzaria.call('storage.get', { key: ROOM_KEY });
+      if (stored && stored.success && typeof stored.data === 'string') {
+        el.roomInput.value = stored.data;
+        activeRoom = stored.data;
+      }
+    } catch (e) {
+      // אין קוד שמור — השדה נשאר כמו שהוא.
+    }
+  }
+
   function renderState(state) {
     el.deviceLabel.textContent = state.deviceName || '';
     renderDesk(state);
@@ -466,6 +750,12 @@
     el.leaveButton.classList.toggle('hidden', !paired);
     setRoomChip(paired ? activeRoom : '');
     trackWaiting(paired && peers.length === 0, paired ? activeRoom : '');
+
+    if (state.transport === 'relay') {
+      renderRemote(state, paired, peers);
+      return;
+    }
+    clearRemoteBanners();
 
     if (!paired) {
       setStatus('', 'לא מחובר לחברותא');
@@ -700,7 +990,7 @@
 
   async function loadStartup() {
     try {
-      renderStartup(await Companion.startup());
+      renderStartup(await Link.api.startup());
       startupLoaded = true;
     } catch (e) {
       // גרסת מתאם שאינה מכירה את /startup, או כשל רשת. אין כאן מה
@@ -729,10 +1019,10 @@
    */
   async function assertRoom(state) {
     if (state.paired !== true || activeRoom === '') return false;
-    const port = Companion.port;
+    const port = Link.api.port;
     if (port === null || port === roomAssertedPort) return false;
     try {
-      await Companion.setRoom(activeRoom);
+      await Link.api.setRoom(activeRoom);
       roomAssertedPort = port;
       return true;
     } catch (e) {
@@ -755,17 +1045,23 @@
     if (refreshing) return refreshing;
     refreshing = (async function () {
       try {
-        let state = await Companion.hello();
+        let state = await Link.api.hello();
         clearBanner('companion');
         // אמירת הקוד מנקה את מצב החדר במתאם כשהוא היה בחדר אחר, ולכן
         // המצב נקרא מחדש ולא מוצג זה שנקרא לפניה.
-        if (await assertRoom(state)) state = await Companion.hello();
+        if (await assertRoom(state)) state = await Link.api.hello();
         renderState(state);
         // פעם אחת לכל חיבור למתאם: הרישום אינו משתנה מעצמו, ואין טעם
         // לתחקר אותו בכל רענון.
         if (!startupLoaded) await loadStartup();
       } catch (e) {
-        showFailure(e && e.kind);
+        // בחיבור המרוחק אין מתאם, ולכן אסור להגיע להסברים עליו. כשל כאן
+        // הוא קריאת אחסון של אוצריא — רגעי, והרענון הבא ינסה שוב.
+        if (Link.mode === 'remote') {
+          setStatus('off', 'אין תשובה מאוצריא');
+        } else {
+          showFailure(e && e.kind);
+        }
       } finally {
         refreshing = null;
       }
@@ -813,11 +1109,11 @@
       // שהמשתמש בוחר ממנה מה להעביר.
       const before = await readCarryOptions();
 
-      await Companion.setRoom(code);
+      await Link.api.setRoom(code);
       await Otzaria.call('storage.set', { key: ROOM_KEY, value: code });
       activeRoom = code;
       // הקוד נאמר לו כרגע במפורש; אין צורך שהרענון יאמר אותו שוב.
-      roomAssertedPort = Companion.port;
+      roomAssertedPort = Link.api.port;
 
       await rememberPendingCarry(before);
       const entered = await SyncEngine.enterDesk();
@@ -987,7 +1283,7 @@
   async function leave() {
     el.leaveButton.disabled = true;
     try {
-      await Companion.setRoom('');
+      await Link.api.setRoom('');
       activeRoom = '';
       roomAssertedPort = 0;
       Otzaria.call('ui.showMessage', { message: 'יצאת מהחברותא' });
@@ -1007,7 +1303,7 @@
     }
     el.nameButton.disabled = true;
     try {
-      await Companion.setName(name);
+      await Link.api.setName(name);
       nameDirty = false;
       Otzaria.call('ui.showSuccess', { message: 'השם עודכן' });
       await refresh();
@@ -1031,7 +1327,7 @@
     el.startupToggle.disabled = true;
     el.startupText.textContent = 'מעדכן…';
     try {
-      const state = await Companion.setStartup(wanted);
+      const state = await Link.api.setStartup(wanted);
       renderStartup(state);
       if (state && state.supported && state.enabled === wanted) {
         Otzaria.call('ui.showSuccess', {
@@ -1063,7 +1359,7 @@
     el.locationToggle.disabled = true;
     el.closePolicy.disabled = true;
     try {
-      const state = await Companion.setSettings(settings);
+      const state = await Link.api.setSettings(settings);
       settingsBusy = false;
       renderDesk(state);
       if (message) Otzaria.call('ui.showSuccess', { message: message });
@@ -1132,7 +1428,7 @@
         // "לא" נאמר למתאם, אחרת השאלה הייתה חוזרת בכל סבב.
         for (let i = 0; i < names.length; i++) {
           try {
-            await Companion.dismissClose(names[i]);
+            await Link.api.dismissClose(names[i]);
           } catch (e) {
             // כשל בודד אינו מפיל את השאר.
           }
@@ -1190,6 +1486,8 @@
     nameDirty = true;
   });
   on(el.startupToggle, 'change', toggleStartup);
+  on(el.modeLocal, 'change', changeMode);
+  on(el.modeRemote, 'change', changeMode);
   on(el.roomInput, 'keydown', function (event) {
     if (event.key === 'Enter') join();
   });
@@ -1212,12 +1510,24 @@
 
     const permissions = (payload && payload.permissions) || [];
     const canRunInBackground = permissions.indexOf('app.run_on_startup') >= 0;
+    offlineMode = !!(payload && payload.connectivity && payload.connectivity.isOfflineMode);
+    RemoteLink.setPermissions(permissions);
+
+    // דרך החיבור נקראת לפני הפעלת המנוע, כדי שלא יתחיל מול החיבור הלא
+    // נכון. קריאה שנכשלה משאירה את ברירת המחדל — החיבור הישיר.
+    await Link.load();
+    applyModeUi();
 
     // **הלשונית מפעילה את המנוע תמיד**, וההכרעה מי מסנכרן בפועל היא של
-    // המתאם (ראו את התיעוד בראש `sync-engine.js`). קודם היא נגזרה כאן
-    // מרשימת ההרשאות, והתוצאה הייתה שהלשונית ויתרה על המנוע לטובת מופע
-    // רקע שלא בהכרח היה חי — ואז שום דבר לא סונכרן, בלי סימן.
+    // המתאם — או, בחיבור המרוחק, של נעילת Web Locks (ראו `remote-link.js`).
+    // קודם היא נגזרה כאן מרשימת ההרשאות, והתוצאה הייתה שהלשונית ויתרה על
+    // המנוע לטובת מופע רקע שלא בהכרח היה חי — ואז שום דבר לא סונכרן.
     SyncEngine.start(instanceId);
+    Link.watch(function () {
+      SyncEngine.start(instanceId);
+      applyModeUi();
+      loadRoomLabel().then(refresh);
+    });
 
     if (!canRunInBackground) {
       banner(
@@ -1239,15 +1549,7 @@
     loadPendingCarry();
     startRefreshing();
 
-    try {
-      const stored = await Otzaria.call('storage.get', { key: ROOM_KEY });
-      if (stored && stored.success && typeof stored.data === 'string') {
-        el.roomInput.value = stored.data;
-        activeRoom = stored.data;
-      }
-    } catch (e) {
-      // אין קוד שמור — השדה נשאר ריק.
-    }
+    await loadRoomLabel();
   });
 
   Otzaria.on('theme.changed', applyTheme);

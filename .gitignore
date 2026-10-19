@@ -13,3 +13,7 @@ dist/
 .claude/
 Thumbs.db
 desktop.ini
+
+# Node / Cloudflare
+node_modules/
+.wrangler/

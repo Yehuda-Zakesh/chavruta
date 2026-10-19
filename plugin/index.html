@@ -34,6 +34,40 @@
         <div class="column">
           <div class="banners" id="banners"></div>
 
+          <!--
+            דרך החיבור. ברירת המחדל — חיבור ישיר — היא מה שהיה תמיד, ולכן
+            משתמש קיים שלא בחר דבר ממשיך בדיוק כמו קודם.
+          -->
+          <section class="card" id="modeCard">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="6" cy="12" r="2.4" />
+                  <circle cx="18" cy="12" r="2.4" />
+                  <path d="M8.4 12h7.2" />
+                </svg>
+              </span>
+              <span class="card-title">דרך החיבור</span>
+            </div>
+            <div class="mode-options" role="radiogroup" aria-label="דרך החיבור">
+              <label class="mode-option">
+                <input type="radio" name="connectionMode" value="local" id="modeLocal" checked />
+                <span class="mode-body">
+                  <span class="mode-title">חיבור ישיר — בלוטות' או רשת מקומית</span>
+                  <span class="mode-text">בלי אינטרנט. דורש את תוכנת המתאם על כל מחשב.</span>
+                </span>
+              </label>
+              <label class="mode-option">
+                <input type="radio" name="connectionMode" value="remote" id="modeRemote" />
+                <span class="mode-body">
+                  <span class="mode-title">חיבור מרחוק — דרך האינטרנט</span>
+                  <span class="mode-text">לחברותא בכל מקום. בלי תוכנה נוספת — דרך שרת ממסר, שאינו רואה את קוד החברותא.</span>
+                </span>
+              </label>
+            </div>
+            <p class="hint">שני הצדדים צריכים לבחור באותה דרך חיבור ובאותו קוד.</p>
+          </section>
+
           <!-- כרטיס ראשי: מצב החיבור והזיווג, במקום אחד -->
           <section class="card hero">
             <span class="hero-aura" aria-hidden="true"></span>
@@ -69,7 +103,7 @@
                 <h2 class="hero-title" id="heroTitle">מתחבר…</h2>
                 <span class="chip hidden" id="roomChip"></span>
               </div>
-              <p class="hero-sub" id="heroSub">בודק אם מתאם חברותא פועל על המחשב הזה.</p>
+              <p class="hero-sub" id="heroSub">בודק את מצב החיבור.</p>
             </div>
 
             <div class="pair-form">
@@ -309,7 +343,7 @@
             </div>
           </section>
 
-          <section class="card">
+          <section class="card" id="howLocal">
             <div class="card-head">
               <span class="card-icon" aria-hidden="true">
                 <!-- סמל הבלוטות', ולא קשתות Wi-Fi: הקישור כאן הוא קירבה. -->
@@ -357,12 +391,64 @@
               </li>
             </ol>
           </section>
+
+          <section class="card hidden" id="howRemote">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="8.4" />
+                  <path d="M3.6 12h16.8" />
+                  <path d="M12 3.6c2.4 2.4 3.4 5.2 3.4 8.4s-1 6-3.4 8.4c-2.4-2.4-3.4-5.2-3.4-8.4s1-6 3.4-8.4z" />
+                </svg>
+              </span>
+              <span class="card-title">איך עובד החיבור מרחוק</span>
+            </div>
+            <ol class="steps">
+              <li class="step">
+                <span class="step-num">1</span>
+                <span class="step-body">
+                  <span class="step-title">בלי תוכנה נוספת</span>
+                  <span class="step-text">
+                    התוסף עצמו מתחבר לשרת ממסר דרך אוצריא. צריך רק את הרשאת
+                    <b>גישה לאינטרנט</b> של התוסף.
+                  </span>
+                </span>
+              </li>
+              <li class="step">
+                <span class="step-num">2</span>
+                <span class="step-body">
+                  <span class="step-title">הקוד אינו יוצא מהמחשב</span>
+                  <span class="step-text">
+                    לשרת נשלחים רק גיבוב של הקוד והודעות חתומות. השרת מעביר
+                    אותן ואינו יכול לזייף אותן.
+                  </span>
+                </span>
+              </li>
+              <li class="step">
+                <span class="step-num">3</span>
+                <span class="step-body">
+                  <span class="step-title">גם כשהלשונית סגורה</span>
+                  <span class="step-text">
+                    כדי שהסנכרון ימשיך בזמן קריאה בספר, אשרו לתוסף ריצה בעליית
+                    אוצריא והמשך ריצה ברקע — כמו בחיבור הישיר.
+                  </span>
+                </span>
+              </li>
+            </ol>
+            <p class="hint" id="remoteDiag"></p>
+          </section>
         </div>
       </main>
     </div>
 
     <script src="js/theme.js"></script>
     <script src="js/companion.js"></script>
+    <script src="js/remote/sha256.js"></script>
+    <script src="js/remote/protocol.js"></script>
+    <script src="js/remote/hub.js"></script>
+    <script src="js/remote/relay-transport.js"></script>
+    <script src="js/remote/remote-link.js"></script>
+    <script src="js/link.js"></script>
     <script src="js/sync-engine.js"></script>
     <script src="js/app.js"></script>
   </body>

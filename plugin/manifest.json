@@ -3,7 +3,7 @@
   "id": "io.github.yehudazakesh.chavruta",
   "name": "חברותא",
   "version": "7.0.0",
-  "description": "לומדים יחד בשני מחשבים: מקום הלימוד מסתנכרן ביניכם דרך חיבור בלוטות' ישיר, בלי ראוטר ובלי אינטרנט.",
+  "description": "לומדים יחד בשני מחשבים: הספרים ומקום הלימוד מסתנכרנים ביניכם — בחיבור בלוטות'/רשת מקומית ישיר, או מרחוק דרך האינטרנט.",
   "author": "יהודה זקש",
   "stability": "stable",
   "homepage": "https://github.com/Yehuda-Zakesh/chavruta",
@@ -24,13 +24,14 @@
     "reader.open",
     "navigation.write",
     "network.localhost",
+    "network.access",
     "plugin.storage.read",
     "plugin.storage.write",
     "ui.feedback"
   ],
   "network": {
     "enabled": true,
-    "allowlist": ["127.0.0.1"]
+    "allowlist": ["127.0.0.1", "http://chavruta-relay.chavruta.workers.dev"]
   },
   "contributes": {
     "toolTab": {
