@@ -24,6 +24,12 @@
    */
   const CARRY_KEY = 'carryPending';
 
+  function showScreen(screen) {
+    document.body.dataset.screen = screen;
+    const content = document.getElementById('appContent');
+    if (content) content.scrollTop = 0;
+  }
+
   const el = {
     topbar: document.getElementById('topbar'),
     appContent: document.getElementById('appContent'),
@@ -58,19 +64,48 @@
     carrySkip: document.getElementById('carrySkip'),
     closeCard: document.getElementById('closeCard'),
     closeList: document.getElementById('closeList'),
-    closeYes: document.getElementById('closeYes'),
-    closeNo: document.getElementById('closeNo'),
     companionCard: document.getElementById('companionCard'),
     startupToggle: document.getElementById('startupToggle'),
     startupText: document.getElementById('startupText'),
-    modeLocal: document.getElementById('modeLocal'),
-    modeRemote: document.getElementById('modeRemote'),
     howLocal: document.getElementById('howLocal'),
     howRemote: document.getElementById('howRemote'),
   };
 
   /** האם אוצריא במצב "מנותק" (בלי אינטרנט), לפי `plugin.boot`. */
   let offlineMode = false;
+  let bootContext = {};
+  let readinessKey = '';
+
+  function configureReadiness() {
+    const info = Readiness.fromBoot(bootContext, Link.mode);
+    RemoteLink.setReadiness(info);
+    Companion.setReadiness(info);
+  }
+
+  function renderReadiness(state) {
+    const sides = Readiness.evaluate(Readiness.fromBoot(bootContext, Link.mode), state, Link.mode);
+    const key = JSON.stringify(sides);
+    if (key === readinessKey) return;
+    readinessKey = key;
+    const list = document.getElementById('readinessList');
+    list.textContent = '';
+    sides.forEach(function (side) {
+      const section = document.createElement('section');
+      const title = document.createElement('h3');
+      title.textContent = side.title;
+      section.appendChild(title);
+      side.checks.forEach(function (check) {
+        const row = document.createElement('p');
+        row.className = 'readiness-row readiness-' + check.kind;
+        const label = document.createElement('b');
+        label.textContent = check.label + ': ';
+        row.appendChild(label);
+        row.appendChild(document.createTextNode(check.text));
+        section.appendChild(row);
+      });
+      list.appendChild(section);
+    });
+  }
 
   let refreshTimer = null;
   let nameDirty = false;
@@ -90,6 +125,7 @@
 
   /** ספרים שהחברותא סגרה וממתינים לתשובה שלך. ראו [renderCloseAsk]. */
   let pendingCloses = [];
+  const closingBooks = new Set();
 
   /** הקוד שהזיווג הנוכחי נעשה בו — למען ה-chip שבכרטיס הראשי. המתאם מדווח
    *  אם יש זיווג, אך לא את הקוד עצמו, ולכן הוא נזכר כאן. */
@@ -506,8 +542,8 @@
         status: 'גרסת אוצריא ישנה',
         title: 'צריך לעדכן את אוצריא',
         html:
-          'החיבור מרחוק משתמש ב-<code>network.fetchStream</code>, שקיים ' +
-          'מאוצריא <b>0.9.97</b> ומעלה.',
+          'החיבור מרחוק משתמש ב-<code>network.fetchStream</code>. ' +
+          'גרסה זו של התוסף דורשת אוצריא <b>0.9.99</b> ומעלה.',
       };
     }
     if (kind === 'http' || kind === 'invalid') {
@@ -676,8 +712,7 @@
    */
   function applyModeUi() {
     const remote = Link.mode === 'remote';
-    if (el.modeLocal) el.modeLocal.checked = !remote;
-    if (el.modeRemote) el.modeRemote.checked = remote;
+    document.body.dataset.connection = remote ? 'remote' : 'local';
     if (el.howLocal) el.howLocal.classList.toggle('hidden', remote);
     if (el.howRemote) el.howRemote.classList.toggle('hidden', !remote);
     if (remote) {
@@ -692,11 +727,10 @@
   }
 
   /** המשתמש בחר דרך חיבור אחרת. */
-  async function changeMode(event) {
-    const wanted = event && event.target ? event.target.value : 'local';
+  async function changeMode(wanted) {
     if (wanted === Link.mode) return;
-    if (el.modeLocal) el.modeLocal.disabled = true;
-    if (el.modeRemote) el.modeRemote.disabled = true;
+    document.getElementById('chooseLocal').disabled = true;
+    document.getElementById('chooseRemote').disabled = true;
     try {
       await Link.setMode(wanted);
       Otzaria.call('ui.showSuccess', {
@@ -707,8 +741,8 @@
     } catch (e) {
       notifyError('החלפת דרך החיבור נכשלה: ' + (e && e.message ? e.message : ''));
     } finally {
-      if (el.modeLocal) el.modeLocal.disabled = false;
-      if (el.modeRemote) el.modeRemote.disabled = false;
+      document.getElementById('chooseLocal').disabled = false;
+      document.getElementById('chooseRemote').disabled = false;
       applyModeUi();
       await loadRoomLabel();
       refresh();
@@ -738,6 +772,7 @@
   }
 
   function renderState(state) {
+    renderReadiness(state);
     el.deviceLabel.textContent = state.deviceName || '';
     renderDesk(state);
     if (!nameDirty && document.activeElement !== el.nameInput) {
@@ -907,11 +942,11 @@
     unsupported: {
       status: 'גרסת אוצריא ישנה',
       title: 'אוצריא כאן ישנה מדי',
-      sub: 'הלשונית משתמשת בממשק רשת שנוסף באוצריא 0.9.97.',
+      sub: 'גרסה זו של התוסף דורשת אוצריא 0.9.99 ומעלה.',
       bannerTitle: 'צריך לעדכן את אוצריא',
       html:
-        'התוסף מדבר עם המתאם דרך <code>network.fetchStream</code>, שקיים ' +
-        'מאוצריא <b>0.9.97</b> ומעלה. עדכנו את אוצריא, והלשונית תתחבר לבד.',
+        'התוסף מדבר עם המתאם דרך <code>network.fetchStream</code>. ' +
+        'עדכנו לאוצריא <b>0.9.99</b> ומעלה, והלשונית תתחבר לבד.',
     },
     allowlist: {
       status: 'הכתובת חסומה',
@@ -1055,6 +1090,7 @@
         // לתחקר אותו בכל רענון.
         if (!startupLoaded) await loadStartup();
       } catch (e) {
+        renderReadiness(null);
         // בחיבור המרוחק אין מתאם, ולכן אסור להגיע להסברים עליו. כשל כאן
         // הוא קריאת אחסון של אוצריא — רגעי, והרענון הבא ינסה שוב.
         if (Link.mode === 'remote') {
@@ -1158,6 +1194,7 @@
    */
   function offerCarry(books) {
     carryOptions = Array.isArray(books) ? books : [];
+    if (carryOptions.length > 0) showScreen('connection');
     renderCarry();
   }
 
@@ -1403,14 +1440,32 @@
     const has = pendingCloses.length > 0;
     el.closeCard.classList.toggle('hidden', !has);
     if (!has) return;
-    el.closeList.textContent = pendingCloses.join(', ');
+    el.closeList.textContent = '';
+    pendingCloses.forEach(function (name) {
+      const row = document.createElement('li');
+      row.className = 'close-book';
+      const title = document.createElement('b');
+      title.textContent = name;
+      row.appendChild(title);
+      [true, false].forEach(function (close) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn ' + (close ? 'btn-primary' : 'btn-ghost');
+        button.textContent = close ? 'לסגור גם כאן' : 'להשאיר פתוח';
+        button.setAttribute('aria-label', button.textContent + ': ' + name);
+        button.disabled = closingBooks.size > 0;
+        button.addEventListener('click', function () { answerClose(name, close); });
+        row.appendChild(button);
+      });
+      el.closeList.appendChild(row);
+    });
   }
 
-  async function answerClose(shouldClose) {
-    const names = pendingCloses.slice();
-    if (names.length === 0) return;
-    el.closeYes.disabled = true;
-    el.closeNo.disabled = true;
+  async function answerClose(name, shouldClose) {
+    if (closingBooks.size > 0 || pendingCloses.indexOf(name) < 0) return;
+    const names = [name];
+    closingBooks.add(name);
+    renderCloseAsk();
     try {
       if (shouldClose) {
         const closed = await SyncEngine.closeBooksByName(names);
@@ -1424,17 +1479,13 @@
             ? 'הספר נסגר גם כאן'
             : names.length + ' ספרים נסגרו גם כאן',
         });
-      } else {
-        // "לא" נאמר למתאם, אחרת השאלה הייתה חוזרת בכל סבב.
-        for (let i = 0; i < names.length; i++) {
-          try {
-            await Link.api.dismissClose(names[i]);
-          } catch (e) {
-            // כשל בודד אינו מפיל את השאר.
-          }
-        }
       }
-      pendingCloses = [];
+      // כשל באישור "להשאיר פתוח" נשאר גלוי, כדי שאפשר יהיה לנסות שוב.
+      // סגירה שכבר בוצעה אינה תלויה בזמינות הרשת — הסריקה תדווח עליה.
+      if (!shouldClose) {
+        for (let i = 0; i < names.length; i++) await Link.api.dismissClose(names[i]);
+      }
+      pendingCloses = pendingCloses.filter(function (name) { return names.indexOf(name) < 0; });
       renderCloseAsk();
       await refresh();
     } catch (e) {
@@ -1446,8 +1497,8 @@
         'הסגירה נכשלה: ' + (e && e.message ? e.message : 'אוצריא לא ענתה')
       );
     } finally {
-      el.closeYes.disabled = false;
-      el.closeNo.disabled = false;
+      closingBooks.delete(name);
+      renderCloseAsk();
     }
   }
 
@@ -1474,20 +1525,56 @@
     carrySelected(false);
   });
   on(el.carrySkip, 'click', skipCarry);
-  on(el.closeYes, 'click', function () {
-    answerClose(true);
-  });
-  on(el.closeNo, 'click', function () {
-    answerClose(false);
-  });
   on(el.leaveButton, 'click', leave);
   on(el.nameButton, 'click', saveName);
   on(el.nameInput, 'input', function () {
     nameDirty = true;
   });
   on(el.startupToggle, 'change', toggleStartup);
-  on(el.modeLocal, 'change', changeMode);
-  on(el.modeRemote, 'change', changeMode);
+  on(document.getElementById('homeButton'), 'click', function () { showScreen('home'); });
+  on(document.getElementById('settingsButton'), 'click', function () { showScreen('settings'); });
+  on(document.getElementById('reportButton'), 'click', function () { showScreen('report'); });
+  on(document.getElementById('checkReadiness'), 'click', async function () {
+    const button = document.getElementById('checkReadiness');
+    button.disabled = true;
+    try { await refresh(); } finally { button.disabled = false; }
+  });
+  ['Remote', 'Local'].forEach(function (choice) {
+    on(document.getElementById('choose' + choice), 'click', async function () {
+      await changeMode(choice.toLowerCase());
+      showScreen('connection');
+      el.roomInput.focus();
+    });
+  });
+  on(document.getElementById('downloadAdapter'), 'click', async function () {
+    try {
+      const res = await Otzaria.call('app.openUrl', {
+        url: 'https://github.com/Yehuda-Zakesh/chavruta/releases/latest',
+      });
+      if (!res || !res.success) throw new Error('פתיחת דף ההורדות נכשלה. בדקו את הרשאת פתיחת הקישורים של התוסף.');
+    } catch (e) { notifyError(e.message); }
+  });
+  on(document.getElementById('sendReport'), 'click', async function () {
+    const input = document.getElementById('reportDetails');
+    const button = document.getElementById('sendReport');
+    const status = document.getElementById('reportStatus');
+    const details = input.value.trim();
+    if (!details) { status.textContent = 'כתבו תיאור של התקלה לפני השליחה.'; input.focus(); return; }
+    button.disabled = true;
+    status.textContent = 'ממתין לאישור השליחה באוצריא…';
+    try {
+      const res = await Otzaria.call('feedback.report', {
+        details: details + '\n\nדרך החיבור: ' + (Link.mode === 'remote' ? 'מרחוק' : 'מתאם'),
+        reportType: 'bug',
+      });
+      if (!res || !res.success) throw new Error(res && res.error && res.error.message || 'שליחת הדיווח נכשלה');
+      const messages = { sent: 'הדיווח נשלח. תודה!', queued: 'הדיווח נשמר באוצריא ויישלח כשהחיבור יתאפשר.', cancelled: 'השליחה בוטלה. התיאור נשמר כאן לעריכה.' };
+      if (!messages[res.data]) throw new Error('אוצריא החזירה מצב שליחה לא מוכר');
+      status.textContent = messages[res.data];
+      if (res.data === 'sent' || res.data === 'queued') input.value = '';
+    } catch (e) { status.textContent = e.message; }
+    finally { button.disabled = false; }
+  });
   on(el.roomInput, 'keydown', function (event) {
     if (event.key === 'Enter') join();
   });
@@ -1506,6 +1593,7 @@
   // --- מחזור חיים ----------------------------------------------------------
 
   Otzaria.on('plugin.boot', async function (payload) {
+    bootContext = payload || {};
     applyTheme(payload.theme);
 
     const permissions = (payload && payload.permissions) || [];
@@ -1516,6 +1604,8 @@
     // דרך החיבור נקראת לפני הפעלת המנוע, כדי שלא יתחיל מול החיבור הלא
     // נכון. קריאה שנכשלה משאירה את ברירת המחדל — החיבור הישיר.
     await Link.load();
+    configureReadiness();
+    renderReadiness(null);
     applyModeUi();
 
     // **הלשונית מפעילה את המנוע תמיד**, וההכרעה מי מסנכרן בפועל היא של
@@ -1524,6 +1614,7 @@
     // המנוע לטובת מופע רקע שלא בהכרח היה חי — ואז שום דבר לא סונכרן.
     SyncEngine.start(instanceId);
     Link.watch(function () {
+      configureReadiness();
       SyncEngine.start(instanceId);
       applyModeUi();
       loadRoomLabel().then(refresh);
@@ -1557,15 +1648,17 @@
   /**
    * לחיצה על ההודעה "החברותא סגרה ספרים" — ראו `askToClose` במנוע.
    *
-   * ההודעה נשלחת ממופע הרקע, והלחיצה מגיעה לשני המופעים; הלשונית היא
-   * זו שיש לה מסך, ולכן היא זו שמציגה את השאלה.
+   * tapOpenPlugin פותח את הלשונית ומוסר אליה את האירוע ממופע הרקע.
    */
   Otzaria.on('ui.messageClicked', function (payload) {
     const names = payload && payload.payload && payload.payload.deskCloses;
     if (!Array.isArray(names) || names.length === 0) return;
-    pendingCloses = names.slice();
+    pendingCloses = Array.from(new Set(pendingCloses.concat(names.filter(function (name) {
+      return typeof name === 'string' && name.length > 0;
+    }))));
+    showScreen('connection');
     renderCloseAsk();
-    Otzaria.call('plugin.openSelf', {});
+    // tapOpenPlugin פתח את הדף ומסר אליו את האירוע; אין לפתוח מופע נוסף.
   });
 
   // פתיחת הלשונית מתוך ההודעה מגיעה גם כאן; הכרטיס כבר מוצג.

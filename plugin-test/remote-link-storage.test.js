@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { load } = require('./load');
-const { machine, otzaria, until } = require('./fakes');
+const { machine, otzaria, until, gate } = require('./fakes');
 
 const RELAY = process.env.RELAY_URL || 'http://127.0.0.1:9';
 const FILES = [
@@ -20,6 +20,82 @@ const FILES = [
 ];
 
 let clientSeq = 0;
+
+test('עצירה באמצע כתיבת המחזיק אינה ממשיכה להתקין טיימרים במנוע שנמחק', async () => {
+  const host = machine();
+  const ctx = load(FILES);
+  const inner = otzaria(host);
+  const paused = gate();
+  paused.close();
+  let writingHolder = false;
+  const link = ctx.RemoteLink.create({
+    call: async (method, args) => {
+      if (method === 'storage.set' && args.key === 'remote.holder') {
+        writingHolder = true;
+        await paused.opened;
+      }
+      return inner(method, args);
+    },
+    locks: null, BroadcastChannel: null, relayUrl: RELAY,
+  });
+  link.setInstance('background');
+  const pending = link.events(-1);
+  await until(() => writingHolder, 2000);
+  link.setInstance('');
+  await link.shutdown();
+  paused.open();
+  assert.equal((await pending).engineMine, false);
+  assert.equal(link.engineState(), null);
+});
+
+test('תצוגה שומרת חדר ומחוברים בכשל אחסון זמני, ומכבדת יציאה אמיתית', async () => {
+  const host = machine();
+  let failing = false;
+  const ctx = load(FILES);
+  const inner = otzaria(host);
+  const call = (method, args) => failing && method === 'storage.get'
+    ? Promise.resolve({ success: false, error: { message: 'busy' } })
+    : inner(method, args);
+  const link = ctx.RemoteLink.create({ call, locks: host.locks.forClient('display'), BroadcastChannel: null });
+  await link.setRoom('חדר תצוגה');
+  const hash = ctx.RemoteProtocol.hashRoomCode('חדר תצוגה');
+  host.storage.set('remote.status', JSON.stringify({
+    writtenAt: Date.now(), owner: 'background', roomHash: hash,
+    snapshot: { peers: [{ id: 'peer', name: 'חברותא' }] },
+  }));
+  const before = await link.hello();
+  assert.equal(before.peers.length, 1);
+  failing = true;
+  const during = await link.hello();
+  assert.equal(during.paired, true);
+  assert.equal(during.roomLabel, before.roomLabel);
+  assert.equal(during.peers.length, 1);
+  failing = false;
+  await link.setRoom(null);
+  assert.equal((await link.hello()).paired, false);
+});
+
+test('כשל בשליחת הנוכחות הראשונה אינו משבית את קליטת ההגדרות', { timeout: 15000 }, async () => {
+  const host = machine();
+  const ctx = load(FILES);
+  const inner = otzaria(host);
+  const link = ctx.RemoteLink.create({
+    call: (method, args) => {
+      if (method === 'network.fetchStream') throw new Error('network unavailable');
+      return inner(method, args);
+    },
+    locks: host.locks.forClient('startup'), BroadcastChannel: null, relayUrl: RELAY,
+  });
+  link.setInstance('background');
+  try {
+    await link.setRoom('חדר ראשון');
+    await link.events(-1);
+    const config = JSON.parse(host.storage.get('remote.config'));
+    host.storage.set('remote.config', JSON.stringify({ ...config, room: 'חדר שני' }));
+    await until(() => link.engineState().roomHash === ctx.RemoteProtocol.hashRoomCode('חדר שני'), 6000,
+      'טיימר קליטת ההגדרות ממשיך גם כשהרשת אינה זמינה');
+  } finally { await link.shutdown(); }
+});
 
 /** מופע שקריאות `storage.get` שלו נכשלות כש-[failGet] מחזירה אמת. */
 function page(host, kind, failGet) {

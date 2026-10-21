@@ -778,10 +778,11 @@ const SyncEngine = (function () {
     if (closed > 0) {
       lastDeskKey = null;
       await scanDesk(true);
-    } else if (lastError) {
+    }
+    if (lastError) {
       notifyUser('הסגירה נכשלה: ' + lastError);
     }
-    return closed > 0;
+    return closed === slots.length;
   }
 
   /**
@@ -801,6 +802,7 @@ const SyncEngine = (function () {
     try {
       const call = Otzaria.call('ui.showMessage', {
         message: title + ' — לחצו כאן כדי להחליט אם לסגור גם כאן.',
+        tapOpenPlugin: true,
         tapPayload: { deskCloses: names },
       });
       if (call && typeof call.catch === 'function') call.catch(function () {});

@@ -30,6 +30,7 @@ const Companion = (function () {
    * שאינו מנוע, ואז המתאם אינו נוגע בהחזקה בכלל.
    */
   let instance = '';
+  let readiness = null;
 
   /**
    * מסווג כשל של קריאת רשת, כדי שהמסך יוכל להסביר אותו נכון.
@@ -225,6 +226,8 @@ const Companion = (function () {
       instance = typeof value === 'string' ? value : '';
     },
 
+    setReadiness: function (value) { readiness = value; },
+
     get instance() {
       return instance;
     },
@@ -249,7 +252,8 @@ const Companion = (function () {
           '/events?since=' +
             encodeURIComponent(since) +
             '&instance=' +
-            encodeURIComponent(instance),
+            encodeURIComponent(instance) +
+            (readiness ? '&readiness=' + encodeURIComponent(JSON.stringify(readiness)) : ''),
           { timeoutMs: EVENTS_TIMEOUT_MS }
         );
       });

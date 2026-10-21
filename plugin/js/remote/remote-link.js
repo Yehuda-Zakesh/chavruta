@@ -146,6 +146,7 @@ const RemoteLink = (function () {
 
     let instance = '';
     let permissions = [];
+    let readiness = null;
 
     // --- הנעילה ------------------------------------------------------------
 
@@ -321,12 +322,17 @@ const RemoteLink = (function () {
       return res.data === undefined ? null : res.data;
     }
 
-    /** קריאה סלחנית, **לתצוגה בלבד**: כל כשל הוא "אין ערך". */
+    // כשל זמני בתצוגה אינו מוחק מצב שכבר נקרא בהצלחה. ערך חסר אמיתי
+    // עדיין מחליף את המטמון, כך שיציאה יזומה משתקפת מיד.
+    const displayCache = new Map();
     async function storageGet(key) {
       try {
-        return await storageRead(key);
+        const value = await storageRead(key);
+        displayCache.set(key, value);
+        return value;
       } catch (e) {
-        return null;
+        if (displayCache.has(key)) return displayCache.get(key);
+        throw e;
       }
     }
 
@@ -342,6 +348,7 @@ const RemoteLink = (function () {
     async function storageSet(key, value) {
       const res = await call('storage.set', { key: key, value: value });
       if (!res || res.success !== true) throw storageError(res, 'השמירה נכשלה');
+      displayCache.set(key, value);
     }
 
     async function storageRemove(key) {
@@ -506,6 +513,7 @@ const RemoteLink = (function () {
           const hub = new RemoteHub({
             deviceId: identity.deviceId,
             deviceName: config.name || defaultName(identity.deviceId),
+            readiness: readiness ? Object.assign({}, readiness, { engine: kind() }) : null,
             transport: transport,
             now: now,
             timers: timers,
@@ -569,14 +577,17 @@ const RemoteLink = (function () {
           engine = current;
           transport.start();
           transport.retarget(hub.isPaired ? RemoteProtocol.hashRoomCode(hub.roomCode) : null);
-          await hub.start();
-          if (!stillMine(gen)) {
-            haltEngine(false);
+          // כשל בהכרזת הנוכחות הראשונה כבר מדווח בתעבורה. אסור לו
+          // לעצור את התקנת טיימרי האחסון וההגדרות ולהשאיר מנוע חצי פעיל.
+          try { await hub.start(); } catch (e) { /* התעבורה תנסה שוב */ }
+          if (engine !== current || !stillMine(gen)) {
+            if (engine === current) haltEngine(false);
             return null;
           }
           await writeHolder();
-          engine.inboxTimer = timers.setInterval(checkInbox, INBOX_POLL_MS);
-          engine.heartbeat = timers.setInterval(writeStatusNow, STATUS_HEARTBEAT_MS);
+          if (engine !== current || !stillMine(gen)) return null;
+          current.inboxTimer = timers.setInterval(checkInbox, INBOX_POLL_MS);
+          current.heartbeat = timers.setInterval(writeStatusNow, STATUS_HEARTBEAT_MS);
           if (Channel) {
             try {
               engine.channel = new Channel(POKE_CHANNEL);
@@ -748,8 +759,8 @@ const RemoteLink = (function () {
           if (engine !== current) return;
           const key = configKey(config);
           if (key !== current.appliedConfig) {
-            current.appliedConfig = key;
             await applyConfig(current, config);
+            current.appliedConfig = key;
           }
           if (engine !== current) return;
           const hub = current.hub;
@@ -995,6 +1006,11 @@ const RemoteLink = (function () {
       /** ההרשאות שהוענקו, מ-`plugin.boot`. משמשות רק את נפילת האחורה. */
       setPermissions: function (list) {
         permissions = Array.isArray(list) ? list.slice() : [];
+      },
+
+      setReadiness: function (value) {
+        readiness = RemoteProtocol.readinessFromJson(value);
+        if (engine) engine.hub.readiness = readiness ? Object.assign({}, readiness, { engine: kind() }) : null;
       },
 
       get lockSupported() {

@@ -30,7 +30,18 @@ const RemoteProtocol = (function () {
   /** ראו `maxWireTextBytes` ב-Dart. */
   const MAX_WIRE_TEXT_BYTES = 512;
 
-  const TYPES = { loc: 'loc', hi: 'hi', bye: 'bye', desk: 'desk' };
+  const TYPES = { loc: 'loc', hi: 'hi', bye: 'bye', desk: 'desk', ready: 'ready' };
+
+  // הודעת אבחון נפרדת: גרסאות ישנות מתעלמות ממנה וממשיכות לסנכרן כרגיל.
+  function readinessFromJson(raw) {
+    if (!isPlainObject(raw)) return null;
+    if (typeof raw.pluginVersion !== 'string' || raw.pluginVersion.length > 64 ||
+        typeof raw.appVersion !== 'string' || raw.appVersion.length > 64 ||
+        typeof raw.network !== 'boolean' || typeof raw.syncAllowed !== 'boolean' || typeof raw.backgroundEnabled !== 'boolean' ||
+        ['background', 'foreground'].indexOf(raw.engine) < 0) return null;
+    return { pluginVersion: raw.pluginVersion, appVersion: raw.appVersion,
+      network: raw.network, syncAllowed: raw.syncAllowed, backgroundEnabled: raw.backgroundEnabled, engine: raw.engine };
+  }
 
   const encoder = new TextEncoder();
 
@@ -258,6 +269,7 @@ const RemoteProtocol = (function () {
     if (message.entries && message.entries.length > 0) {
       out.desk = message.entries.map(deskEntryToJson);
     }
+    if (message.type === TYPES.ready) out.ready = readinessFromJson(message.readiness);
     return out;
   }
 
@@ -328,6 +340,7 @@ const RemoteProtocol = (function () {
       sequence: sequence,
       location: locationFromJson(raw.loc),
       entries: deskListFromJson(raw.desk),
+      readiness: raw.t === TYPES.ready ? readinessFromJson(raw.ready) : null,
     };
 
     if (!constantTimeEquals(sign(canonical(message), normalizedRoomCode), signature)) return null;
@@ -340,6 +353,7 @@ const RemoteProtocol = (function () {
     }
 
     if (message.type === TYPES.loc && !message.location) return null;
+    if (message.type === TYPES.ready && !message.readiness) return null;
     if (message.type === TYPES.desk && message.entries.length === 0) return null;
     if (message.entries.length > MAX_TABS_PER_MESSAGE) return null;
     return message;
@@ -353,6 +367,7 @@ const RemoteProtocol = (function () {
     MAX_TRACKED_TABS: MAX_TRACKED_TABS,
     MAX_WIRE_TEXT_BYTES: MAX_WIRE_TEXT_BYTES,
     TYPES: TYPES,
+    readinessFromJson: readinessFromJson,
     utf8Length: utf8Length,
     wireTextTooLong: wireTextTooLong,
     normalizeRoomCode: normalizeRoomCode,

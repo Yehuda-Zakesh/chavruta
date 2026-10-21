@@ -68,6 +68,28 @@ function page(host, kind, options) {
 
 const skip = RELAY ? false : 'RELAY_URL אינו מוגדר — אין שרת מקומי';
 
+test('מוכנות בשני מחשבים: גרסאות והרשאות מגיעות עם זהות המנוע בפועל', { skip, timeout: 30000 }, async () => {
+  const a = page(machine(), 'background');
+  const b = page(machine(), 'foreground');
+  const info = { pluginVersion: '7.0.0', appVersion: '0.9.98', network: true,
+    syncAllowed: true, backgroundEnabled: true, engine: 'foreground' };
+  a.link.setReadiness(info);
+  b.link.setReadiness({ ...info, pluginVersion: '6.0.0', backgroundEnabled: false });
+  const code = 'מוכנות ' + Math.random().toString(36).slice(2);
+  try {
+    await a.link.setRoom(code);
+    await b.link.setRoom(code);
+    await until(async () => (await a.link.hello()).peers.some(p => p.readiness), 15000);
+    await until(async () => (await b.link.hello()).peers.some(p => p.readiness), 15000);
+    const peerA = (await b.link.hello()).peers[0];
+    const peerB = (await a.link.hello()).peers[0];
+    assert.equal(peerA.readiness.engine, 'background');
+    assert.equal(peerB.readiness.pluginVersion, '6.0.0');
+    assert.equal(peerB.readiness.backgroundEnabled, false);
+    assert.ok(peerA.readinessAt > 0);
+  } finally { await a.stop(); await b.stop(); }
+});
+
 test('שני מחשבים בחדר אחד: נוכחות, מקום, הד ושולחן', { skip, timeout: 60000 }, async () => {
   const a = page(machine(), 'background');
   const b = page(machine(), 'foreground');

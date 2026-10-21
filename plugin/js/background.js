@@ -16,12 +16,19 @@ Otzaria.on('plugin.boot', async function (payload) {
   if (!payload || !payload.app || payload.app.runMode !== 'background') return;
   RemoteLink.setPermissions(payload.permissions);
   await Link.load();
+  function configureReadiness() {
+    const info = Readiness.fromBoot(payload, Link.mode);
+    RemoteLink.setReadiness(info);
+    Companion.setReadiness(info);
+  }
+  configureReadiness();
   // `'background'` הוא המזהה שמועדף על לשונית — במתאם וגם בנעילה של
   // החיבור המרוחק: המופע הזה חי כל זמן שאוצריא פתוחה, ואילו הלשונית
   // מוקפאת ברגע שהמשתמש עובר לספר.
   SyncEngine.start('background');
   // החלפת דרך החיבור נעשית בלשונית; המופע הזה מגלה אותה ומתחיל מחדש.
   Link.watch(function () {
+    configureReadiness();
     SyncEngine.start('background');
   });
 });

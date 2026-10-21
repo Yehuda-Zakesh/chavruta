@@ -247,6 +247,15 @@ class LocalApi {
       return;
     }
 
+    final readinessText = request.uri.queryParameters['readiness'];
+    if (claimsEngine && readinessText != null && readinessText.length <= 1024) {
+      try {
+        hub.setReadiness(jsonDecode(readinessText));
+      } on FormatException {
+        /* אבחון פגום אינו עוצר סנכרון */
+      }
+    }
+
     // **מופע שרק עכשיו קיבל את ההחזקה מקבל תשובה מיד.** בלי זה הוא היה
     // לומד שהמנוע בידיו רק בתום ההמתנה הארוכה — עד 25 שניות שבהן הוא
     // מחזיק את ההחזקה אך אינו מאזין לשינויי מקום ואינו מדווח כלום. זה

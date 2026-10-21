@@ -62,10 +62,15 @@ class PeerInfo {
   /// השעון המקומי.
   int lastSeenMs;
 
+  Map<String, Object?>? readiness;
+  int readinessAt = 0;
+
   Map<String, Object?> toJson() => {
     'id': id,
     'name': name,
     'lastSeenMs': lastSeenMs,
+    'readiness': readiness,
+    'readinessAt': readinessAt,
   };
 }
 
@@ -95,6 +100,14 @@ DateTime _systemClock() => DateTime.now();
 /// הליבה: מחברת בין התוסף (דרך ה-API המקומי) לבין הרשת המקומית,
 /// ומחזיקה את כל ההחלטות — מי חבר, מה המיקום המרוחק, ומה הד.
 class SyncHub {
+  Map<String, Object?>? readiness;
+
+  void setReadiness(Object? value) {
+    final next = SyncMessage.parseReadiness(value);
+    if (next == null) return;
+    readiness = next;
+  }
+
   SyncHub({
     required this.config,
     required this.transport,
@@ -204,12 +217,12 @@ class SyncHub {
   /// [hasFreshRemoteLocation].
   int _lastHandedRemoteMs = 0;
 
-  /// המצב האחרון שנקלט מכל שולח, לזיהוי הודעות כפולות או מאוחרות.
+  /// המצב האחרון מכל שולח, בנפרד לסנכרון ולאבחון, לסינון כפילויות.
   ///
   /// [receivedAtMs] הוא לפי השעון המקומי, ומשמש לניקוי בלבד: רשומה
   /// ישנה מ-[freshnessWindow] כבר אינה מונעת כלום, כי הודעה בגיל כזה
   /// נדחית ממילא ב-`SyncMessage.decode`.
-  final Map<String, ({int sequence, int timestampMs, int receivedAtMs})>
+  final Map<(String, bool), ({int sequence, int timestampMs, int receivedAtMs})>
   _lastFromSender = {};
 
   final List<Completer<void>> _waiters = [];
@@ -838,9 +851,14 @@ class SyncHub {
     _remoteSequence++;
   }
 
-  Future<void> _announcePresence() => transport.send(
-    _buildMessage(SyncMessageType.presence, location: _localLocation),
-  );
+  Future<void> _announcePresence() async {
+    await transport.send(
+      _buildMessage(SyncMessageType.presence, location: _localLocation),
+    );
+    if (readiness != null && engineOwner != null) {
+      await transport.send(_buildMessage(SyncMessageType.readiness));
+    }
+  }
 
   SyncMessage _buildMessage(
     SyncMessageType type, {
@@ -855,6 +873,14 @@ class SyncHub {
     sequence: ++_outgoingSequence,
     location: location,
     entries: entries,
+    readiness: type == SyncMessageType.readiness && readiness != null
+        ? {
+            ...readiness!,
+            'engine': (engineOwner ?? '').startsWith('background')
+                ? 'background'
+                : 'foreground',
+          }
+        : null,
   );
 
   void _handleInbound(SyncMessage message) {
@@ -876,8 +902,17 @@ class SyncHub {
     // כהודעה כפולה — והמנה הראשונה, שנים-עשר ספרים, הייתה נזרקת
     // בשלמותה. המיזוג עצמו חסין־סדר וחסין־כפילות לכל ספר בנפרד (ראו
     // [_mergeRemoteDesk], ההכרעה היא לפי חותמת), ולכן אין כאן מה להגן.
-    final last = _lastFromSender[message.senderId];
-    if (message.type != SyncMessageType.desk && last != null) {
+    // אבחון אינו מקדם את סף הסנכרון. בודקים אותו גם מול הסנכרון כדי
+    // ש-ready ישן לא יחזיר לרשימה חבר שכבר נפרד בהודעה חדשה יותר.
+    final diagnostic = message.type == SyncMessageType.readiness;
+    final senderKey = (message.senderId, diagnostic);
+    final last = _lastFromSender[senderKey];
+    final previous = [
+      last,
+      if (diagnostic) _lastFromSender[(message.senderId, false)],
+    ];
+    for (final last in previous) {
+      if (message.type == SyncMessageType.desk || last == null) continue;
       final duplicate =
           message.sequence == last.sequence &&
           message.timestampMs == last.timestampMs;
@@ -897,7 +932,7 @@ class SyncHub {
         last == null ||
         message.sequence > last.sequence ||
         message.timestampMs > last.timestampMs;
-    _lastFromSender[message.senderId] = (
+    _lastFromSender[senderKey] = (
       sequence: advances ? message.sequence : last.sequence,
       timestampMs: advances ? message.timestampMs : last.timestampMs,
       receivedAtMs: _nowMs,
@@ -948,6 +983,13 @@ class SyncHub {
       peer.lastSeenMs = _nowMs;
     }
 
+    if (message.type == SyncMessageType.readiness) {
+      final current = _peers[message.senderId]!;
+      current.readiness = SyncMessage.parseReadiness(message.readiness);
+      current.readinessAt = _nowMs;
+      _wakeWaiters();
+      return;
+    }
     if (message.type == SyncMessageType.desk) {
       _mergeRemoteDesk(message.entries);
       _wakeWaiters();

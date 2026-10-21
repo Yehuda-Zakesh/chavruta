@@ -81,13 +81,15 @@ enum SyncMessageType {
   farewell,
 
   /// פריטים של השולחן המשותף. ראו [DeskEntry] ואת [maxTabsPerMessage].
-  desk;
+  desk,
+  readiness;
 
   String get wire => switch (this) {
     SyncMessageType.location => 'loc',
     SyncMessageType.presence => 'hi',
     SyncMessageType.farewell => 'bye',
     SyncMessageType.desk => 'desk',
+    SyncMessageType.readiness => 'ready',
   };
 
   static SyncMessageType? fromWire(String value) => switch (value) {
@@ -95,6 +97,7 @@ enum SyncMessageType {
     'hi' => SyncMessageType.presence,
     'bye' => SyncMessageType.farewell,
     'desk' => SyncMessageType.desk,
+    'ready' => SyncMessageType.readiness,
     _ => null,
   };
 }
@@ -282,6 +285,7 @@ class SyncMessage {
     required this.sequence,
     this.location,
     this.entries = const [],
+    this.readiness,
   });
 
   final SyncMessageType type;
@@ -294,6 +298,28 @@ class SyncMessage {
 
   /// פריטי שולחן שהשולח מדווח עליהם. ריק בכל הודעה שאינה [SyncMessageType.desk].
   final List<DeskEntry> entries;
+  final Map<String, Object?>? readiness;
+
+  static Map<String, Object?>? parseReadiness(Object? raw) {
+    if (raw is! Map) return null;
+    if (raw['pluginVersion'] is! String ||
+        (raw['pluginVersion'] as String).length > 64 ||
+        raw['appVersion'] is! String ||
+        (raw['appVersion'] as String).length > 64 ||
+        raw['network'] is! bool ||
+        raw['syncAllowed'] is! bool ||
+        raw['backgroundEnabled'] is! bool ||
+        !['background', 'foreground'].contains(raw['engine']))
+      return null;
+    return {
+      'pluginVersion': raw['pluginVersion'],
+      'appVersion': raw['appVersion'],
+      'network': raw['network'],
+      'syncAllowed': raw['syncAllowed'],
+      'backgroundEnabled': raw['backgroundEnabled'],
+      'engine': raw['engine'],
+    };
+  }
 
   /// גיבוב קוד החברותא — 16 תווים הקסה. מזהה את החדר בלי לחשוף את הקוד.
   static String hashRoomCode(String normalizedRoomCode) =>
@@ -317,6 +343,7 @@ class SyncMessage {
     'seq': sequence,
     'loc': location?.toJson(),
     if (entries.isNotEmpty) 'desk': entries.map((e) => e.toJson()).toList(),
+    if (type == SyncMessageType.readiness) 'ready': parseReadiness(readiness),
   };
 
   static String _sign(Map<String, Object?> canonical, String normalizedRoomCode) {
@@ -386,6 +413,9 @@ class SyncMessage {
       sequence: sequence,
       location: SyncLocation.fromJson(raw['loc']),
       entries: DeskEntry.listFromJson(rawDesk),
+      readiness: type == SyncMessageType.readiness
+          ? parseReadiness(raw['ready'])
+          : null,
     );
 
     if (!_constantTimeEquals(_sign(message._canonical(), normalizedRoomCode), signature)) {
@@ -405,6 +435,8 @@ class SyncMessage {
     // עדכון מיקום בלי מיקום תקין הוא הודעה שבורה. כך גם הודעת שולחן
     // בלי אף פריט תקין: היא אינה אומרת דבר, ורק הייתה מעירה את הממתינים.
     if (type == SyncMessageType.location && message.location == null) return null;
+    if (type == SyncMessageType.readiness && message.readiness == null)
+      return null;
     if (type == SyncMessageType.desk && message.entries.isEmpty) return null;
     // הודעה גדולה מדי נזרקת ולא נחתכת. שולח תקין מפצל למנות של
     // [maxTabsPerMessage] (ראו [SyncHub]), ולכן רשימה ארוכה מזה אינה

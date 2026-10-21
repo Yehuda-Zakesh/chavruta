@@ -61,6 +61,49 @@ void main() {
   late _Client client;
   late FakeReg reg;
 
+  test(
+    'רק מחזיק המנוע רשאי לעדכן מוכנות; דיווח פגום אינו עוצר אירועים',
+    () async {
+      final readiness = {
+        'pluginVersion': '7.0.0',
+        'appVersion': '0.9.98',
+        'network': true,
+        'syncAllowed': true,
+        'backgroundEnabled': true,
+        'engine': 'background',
+      };
+      final query = Uri.encodeComponent(jsonEncode(readiness));
+      await client.request(
+        'GET',
+        '/events?since=-1&instance=background:x&readiness=$query',
+      );
+      expect(hub.readiness?['pluginVersion'], '7.0.0');
+      await hub.start();
+      expect(
+        transport.sent.any(
+          (m) =>
+              m.type == SyncMessageType.readiness &&
+              m.readiness?['engine'] == 'background',
+        ),
+        isTrue,
+      );
+      final other = Uri.encodeComponent(
+        jsonEncode({...readiness, 'pluginVersion': '1.0.0'}),
+      );
+      await client.request(
+        'GET',
+        '/events?since=-1&instance=foreground:a&readiness=$other',
+      );
+      expect(hub.readiness?['pluginVersion'], '7.0.0');
+      final response = await client.request(
+        'GET',
+        '/events?since=-1&instance=background:x&readiness=broken',
+      );
+      expect(response.status, 200);
+      expect(hub.readiness?['pluginVersion'], '7.0.0');
+    },
+  );
+
   setUp(() async {
     temp = await TempConfig.create();
     config = temp.config(roomCode: 'חדר');

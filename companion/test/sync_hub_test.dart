@@ -16,6 +16,7 @@ SyncMessage incoming({
   int sequence = 1,
   int? timestampMs,
   List<DeskEntry> entries = const [],
+  Map<String, Object?>? readiness,
 }) => SyncMessage(
   type: type,
   roomHash: SyncMessage.hashRoomCode('חדר'),
@@ -25,6 +26,7 @@ SyncMessage incoming({
   sequence: sequence,
   location: location,
   entries: entries,
+  readiness: readiness,
 );
 
 void main() {
@@ -52,6 +54,94 @@ void main() {
     await hub.dispose();
     await temp.delete();
   });
+
+  test(
+    'מוכנות אינה בולעת מקום או נוכחות מאוחרים בסדר ואינה חוזרת אחרי פרידה',
+    () async {
+      await hub.start();
+      final stamp = now.millisecondsSinceEpoch;
+      final readiness = <String, Object?>{
+        'pluginVersion': '7.0.0',
+        'appVersion': '0.9.99',
+        'network': true,
+        'syncAllowed': true,
+        'backgroundEnabled': true,
+        'engine': 'background',
+      };
+      await transport.deliver(
+        incoming(
+          type: SyncMessageType.presence,
+          sequence: 1,
+          timestampMs: stamp,
+          location: const SyncLocation(bookId: 'ספר', index: 0),
+        ),
+      );
+      await transport.deliver(
+        incoming(
+          type: SyncMessageType.readiness,
+          sequence: 3,
+          timestampMs: stamp,
+          location: null,
+          readiness: readiness,
+        ),
+      );
+      await transport.deliver(
+        incoming(
+          sequence: 2,
+          timestampMs: stamp,
+          location: const SyncLocation(bookId: 'ספר', index: 5),
+        ),
+      );
+      expect(
+        ((hub.snapshot()['remote'] as Map)['location'] as Map)['index'],
+        5,
+      );
+      final ready = incoming(
+        type: SyncMessageType.readiness,
+        sequence: 6,
+        timestampMs: stamp,
+        location: null,
+        readiness: readiness,
+      );
+      await transport.deliver(ready);
+      await transport.deliver(
+        incoming(
+          type: SyncMessageType.presence,
+          sequence: 5,
+          senderName: 'עודכן',
+          timestampMs: stamp,
+          location: const SyncLocation(bookId: 'ספר', index: 9),
+        ),
+      );
+      expect(((hub.snapshot()['peers'] as List).single as Map)['name'], 'עודכן');
+      final receivedAt =
+          ((hub.snapshot()['peers'] as List).single as Map)['readinessAt'];
+      now = now.add(const Duration(seconds: 1));
+      await transport.deliver(ready);
+      await transport.deliver(
+        incoming(
+          type: SyncMessageType.readiness,
+          sequence: 4,
+          timestampMs: stamp,
+          location: null,
+          readiness: {...readiness, 'pluginVersion': 'old'},
+        ),
+      );
+      final peer = (hub.snapshot()['peers'] as List).single as Map;
+      expect(peer['readinessAt'], receivedAt);
+      expect((peer['readiness'] as Map)['pluginVersion'], '7.0.0');
+      await transport.deliver(
+        incoming(
+          type: SyncMessageType.farewell,
+          sequence: 7,
+          timestampMs: stamp,
+          location: null,
+        ),
+      );
+      await transport.deliver(ready);
+      expect(hub.snapshot()['peers'], isEmpty);
+    },
+  );
 
   group('שידור מקומי', () {
     test('מיקום מקומי משודר לחברותא', () async {

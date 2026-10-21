@@ -44,6 +44,50 @@ function inbound(t, type, extra) {
   );
 }
 
+test('דיווח מוכנות מגיע לצד השני ושורד העברת מנוע בלי לרענן את הגיל שלו', async () => {
+  const t = setup();
+  const readiness = { pluginVersion: '7.0.0', appVersion: '0.9.98', network: true,
+    syncAllowed: true, backgroundEnabled: true, engine: 'background' };
+  t.hub.readiness = readiness;
+  await t.hub.setRoom('קוד');
+  assert.ok(t.sent.some(m => m.type === 'ready' && m.readiness.pluginVersion === '7.0.0'));
+  t.hub.handleInbound(inbound(t, 'ready', { readiness }));
+  const before = t.hub.snapshot().peers[0];
+  t.tick(1000);
+  t.hub.handleInbound(inbound(t, 'hi', { sequence: 2 }));
+  const next = setup({ now: t.now() });
+  await next.hub.setRoom('קוד');
+  next.hub.importState(t.hub.exportState());
+  const peer = next.hub.snapshot().peers[0];
+  assert.equal(peer.readiness.pluginVersion, '7.0.0');
+  assert.equal(peer.readinessAt, before.readinessAt);
+});
+
+test('מוכנות אינה בולעת מקום או נוכחות מאוחרים בסדר, ואינה חוזרת אחרי פרידה', async () => {
+  const t = setup();
+  await t.hub.setRoom('קוד');
+  const readiness = { pluginVersion: '7.0.0', appVersion: '0.9.99', network: true,
+    syncAllowed: true, backgroundEnabled: true, engine: 'background' };
+  t.hub.handleInbound(inbound(t, 'hi', { sequence: 1, location: { bookId: 'ספר', index: 0 } }));
+  t.hub.handleInbound(inbound(t, 'ready', { sequence: 3, readiness }));
+  t.hub.handleInbound(inbound(t, 'loc', { sequence: 2, location: { bookId: 'ספר', index: 5 } }));
+  assert.equal(t.hub.snapshot().remote.location.index, 5);
+  const ready = inbound(t, 'ready', { sequence: 6, readiness });
+  t.hub.handleInbound(ready);
+  t.hub.handleInbound(inbound(t, 'hi', { sequence: 5, location: { bookId: 'ספר', index: 9 } }));
+  assert.equal(t.hub.snapshot().remote.location.index, 9);
+  const receivedAt = t.hub.snapshot().peers[0].readinessAt;
+  t.tick(1000);
+  t.hub.handleInbound(ready);
+  t.hub.handleInbound(inbound(t, 'ready', { sequence: 4, timestampMs: ready.timestampMs,
+    readiness: { ...readiness, pluginVersion: 'old' } }));
+  assert.equal(t.hub.snapshot().peers[0].readinessAt, receivedAt);
+  assert.equal(t.hub.snapshot().peers[0].readiness.pluginVersion, '7.0.0');
+  t.hub.handleInbound(inbound(t, 'bye', { sequence: 7 }));
+  t.hub.handleInbound(ready);
+  assert.equal(t.hub.snapshot().peers.length, 0);
+});
+
 test('פרידה שנשלחה שוב אינה מוציאה את החברותא שוב', async () => {
   const t = setup();
   await t.hub.setRoom('קוד');

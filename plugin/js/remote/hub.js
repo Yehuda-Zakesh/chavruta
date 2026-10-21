@@ -55,6 +55,7 @@ const RemoteHub = (function () {
   function Hub(options) {
     this.deviceId = options.deviceId;
     this.deviceName = options.deviceName || '';
+    this.readiness = options.readiness || null;
     this.roomCode = null;
     this.syncLocation = true;
     this.closePolicy = 'ask';
@@ -645,7 +646,10 @@ const RemoteHub = (function () {
     _announcePresence: function () {
       if (!this.isPaired) return Promise.resolve();
       const location = this.syncLocation ? this._localLocation : null;
-      return this._send(this._buildMessage(P.TYPES.hi, { location: location }));
+      const self = this;
+      return this._send(this._buildMessage(P.TYPES.hi, { location: location })).then(function () {
+        if (self.readiness) return self._send(self._buildMessage(P.TYPES.ready, { readiness: self.readiness }));
+      });
     },
 
     /**
@@ -677,6 +681,7 @@ const RemoteHub = (function () {
         sequence: ++this._outgoingSequence,
         location: more.location || null,
         entries: more.entries || [],
+        readiness: more.readiness || null,
       };
     },
 
@@ -684,15 +689,22 @@ const RemoteHub = (function () {
     handleInbound: function (message) {
       if (message.senderId === this.deviceId) return;
       const now = this._now();
-      const last = this._lastFromSender.get(message.senderId);
-      if (message.type !== P.TYPES.desk && last) {
+      // אבחון אינו מקדם את סף הסנכרון. ready מאוחר עדיין נבדק גם מול
+      // הסנכרון, כדי שלא יחזיר חבר שכבר נפרד בהודעת bye חדשה יותר.
+      const diagnostic = message.type === P.TYPES.ready;
+      const senderKey = JSON.stringify([message.senderId, diagnostic]);
+      const last = this._lastFromSender.get(senderKey);
+      const previous = [last];
+      if (diagnostic) previous.push(this._lastFromSender.get(JSON.stringify([message.senderId, false])));
+      for (const last of previous) {
+        if (message.type === P.TYPES.desk || !last) continue;
         const duplicate = message.sequence === last.sequence && message.timestampMs === last.timestampMs;
         const recent = now - last.receivedAtMs <= PEER_TIMEOUT_MS;
         const older = message.sequence <= last.sequence && message.timestampMs <= last.timestampMs;
         if (duplicate || (older && recent)) return;
       }
       const advances = !last || message.sequence > last.sequence || message.timestampMs > last.timestampMs;
-      this._lastFromSender.set(message.senderId, {
+      this._lastFromSender.set(senderKey, {
         sequence: advances ? message.sequence : last.sequence,
         timestampMs: advances ? message.timestampMs : last.timestampMs,
         receivedAtMs: now,
@@ -732,6 +744,10 @@ const RemoteHub = (function () {
       } else {
         peer.name = message.senderName;
         peer.lastSeenMs = now;
+      }
+      if (message.type === P.TYPES.ready && message.readiness) {
+        peer.readiness = P.readinessFromJson(message.readiness);
+        peer.readinessAt = now;
       }
 
       if (message.type === P.TYPES.desk) {
@@ -879,7 +895,8 @@ const RemoteHub = (function () {
         canClose: this._pluginCanClose,
         carryCandidates: this.carryCandidates().map(P.deskEntryToJson),
         peers: Array.from(this._peers.values()).map(function (p) {
-          return { id: p.id, name: p.name, lastSeenMs: p.lastSeenMs };
+          return { id: p.id, name: p.name, lastSeenMs: p.lastSeenMs,
+            readiness: p.readiness || null, readinessAt: p.readinessAt || 0 };
         }),
       };
     },
@@ -914,6 +931,8 @@ const RemoteHub = (function () {
             id: p.id,
             name: p.name,
             lastSeenMs: p.lastSeenMs,
+            readiness: p.readiness || null,
+            readinessAt: p.readinessAt || 0,
             lastLocation: p.lastLocation ? P.locationToJson(p.lastLocation) : null,
           };
         }),
@@ -1054,6 +1073,8 @@ const RemoteHub = (function () {
           id: raw.id,
           name: raw.name,
           lastSeenMs: raw.lastSeenMs,
+          readiness: P.readinessFromJson(raw.readiness),
+          readinessAt: typeof raw.readinessAt === 'number' ? raw.readinessAt : 0,
           lastLocation: P.locationFromJson(raw.lastLocation),
         });
       });

@@ -13,6 +13,17 @@ const vectors = JSON.parse(
 const ctx = load(['js/remote/sha256.js', 'js/remote/protocol.js']);
 const { ChavrutaCrypto, RemoteProtocol } = ctx;
 
+test('דיווח מוכנות חתום: שינוי גרסה או הרשאות פוסל אותו', () => {
+  const readiness = { pluginVersion: '7.0.0', appVersion: '0.9.98', network: true,
+    syncAllowed: true, backgroundEnabled: true, engine: 'background' };
+  const message = { type: 'ready', roomHash: RemoteProtocol.hashRoomCode('קוד'), senderId: 'abcd',
+    senderName: 'מחשב', timestampMs: Date.now(), sequence: 1, readiness };
+  const wire = RemoteProtocol.encode(message, 'קוד');
+  assert.deepEqual(JSON.parse(JSON.stringify(RemoteProtocol.decode(wire, 'קוד').readiness)), readiness);
+  assert.equal(RemoteProtocol.decode(wire.replace('7.0.0', '9.0.0'), 'קוד'), null);
+  assert.equal(RemoteProtocol.decode(wire.replace('"network":true', '"network":false'), 'קוד'), null);
+});
+
 test('SHA-256 ו-HMAC תואמים את node:crypto', () => {
   const samples = ['', 'abc', 'דף יומי', 'x'.repeat(55), 'y'.repeat(56), 'z'.repeat(64), 'w'.repeat(200)];
   for (const s of samples) {
@@ -64,7 +75,7 @@ test('הודעה ישנה מחלון הטריות נדחית ומדווחת כפ
 });
 
 test('ריפוד מערך השולחן בפריטים פסולים אינו שובר הודעה תקינה', () => {
-  const wire = vectors.messages[3];
+  const wire = vectors.messages.find(wire => JSON.parse(wire).t === 'desk');
   const raw = JSON.parse(wire);
   raw.desk = raw.desk.concat([{ b: '' }, 5, null]);
   assert.ok(RemoteProtocol.decode(JSON.stringify(raw), vectors.code, { now: raw.ts }));

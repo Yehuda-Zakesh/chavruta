@@ -6,7 +6,7 @@
     <title>חברותא</title>
     <link rel="stylesheet" href="css/style.css" />
   </head>
-  <body>
+  <body data-screen="home">
     <!--
       כל האייקונים כאן הם SVG בגוף הדף, בקווי currentColor — כך הם מקבלים את
       צבע ה-theme של אוצריא בלי צבע מקודד, ומתחלפים איתו בזמן אמת.
@@ -24,6 +24,9 @@
           <span class="subtitle" id="deviceLabel"></span>
         </span>
         <span class="spacer"></span>
+        <button class="btn btn-ghost" id="homeButton" type="button">בית</button>
+        <button class="btn btn-ghost" id="settingsButton" type="button">הגדרות</button>
+        <button class="btn btn-ghost" id="reportButton" type="button">דיווח למפתח</button>
         <span class="status" id="statusPill">
           <span class="status-dot" id="statusDot"></span>
           <span id="statusText">מתחבר…</span>
@@ -38,36 +41,94 @@
             דרך החיבור. ברירת המחדל — חיבור ישיר — היא מה שהיה תמיד, ולכן
             משתמש קיים שלא בחר דבר ממשיך בדיוק כמו קודם.
           -->
-          <section class="card" id="modeCard">
-            <div class="card-head">
-              <span class="card-icon" aria-hidden="true">
+          <section id="homeChoices" class="connection-choices" aria-label="בחירת דרך חיבור">
+            <button class="connection-choice" id="chooseRemote" type="button">
+              <span class="choice-symbol" aria-hidden="true">↔</span>
+              <span class="mode-title">חיבור מרחוק</span>
+              <span class="mode-text">דרך האינטרנט, בלי מתאם</span>
+            </button>
+            <button class="connection-choice" id="chooseLocal" type="button">
+              <span class="choice-symbol" aria-hidden="true">⌁</span>
+              <span class="mode-title">חיבור באמצעות מתאם</span>
+              <span class="mode-text">בלוטות׳ או רשת מקומית</span>
+            </button>
+          </section>
+          <section class="card" id="adapterDownload">
+            <h2 class="card-title">מתאם על כל מחשב</h2>
+            <p class="hint">הורידו והתקינו את המתאם בשני המחשבים, ואז חברו ביניהם בבלוטות׳ או ברשת מקומית.</p>
+            <button class="btn btn-primary" id="downloadAdapter" type="button">הורדת המתאם מ־GitHub</button>
+          </section>
+          <section class="card" id="settingsCard">
+            <h2 class="card-title">הגדרות התוסף</h2>
+            <p class="hint">הרשאות אינטרנט וריצה ברקע מנוהלות באוצריא: הגדרות ← כלים ← ניהול תוספים ← חברותא.</p>
+            <div class="detail">
+              <span class="detail-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="6" cy="12" r="2.4" />
-                  <circle cx="18" cy="12" r="2.4" />
-                  <path d="M8.4 12h7.2" />
+                  <path d="M4.2 12h15.6" />
+                  <path d="M14.6 6.8 19.8 12l-5.2 5.2" />
                 </svg>
               </span>
-              <span class="card-title">דרך החיבור</span>
+              <span class="detail-label">סנכרון מקום הלימוד</span>
+              <span class="detail-field">
+                <label class="switch">
+                  <input type="checkbox" id="locationToggle" checked />
+                  <span class="switch-track" aria-hidden="true">
+                    <span class="switch-knob"></span>
+                  </span>
+                  <span class="switch-text" id="locationText">בודק…</span>
+                </label>
+              </span>
             </div>
-            <div class="mode-options" role="radiogroup" aria-label="דרך החיבור">
-              <label class="mode-option">
-                <input type="radio" name="connectionMode" value="local" id="modeLocal" checked />
-                <span class="mode-body">
-                  <span class="mode-title">חיבור ישיר — בלוטות' או רשת מקומית</span>
-                  <span class="mode-text">בלי אינטרנט. דורש את תוכנת המתאם על כל מחשב.</span>
-                </span>
-              </label>
-              <label class="mode-option">
-                <input type="radio" name="connectionMode" value="remote" id="modeRemote" />
-                <span class="mode-body">
-                  <span class="mode-title">חיבור מרחוק — דרך האינטרנט</span>
-                  <span class="mode-text">לחברותא בכל מקום. בלי תוכנה נוספת — דרך שרת ממסר, שאינו רואה את קוד החברותא.</span>
-                </span>
-              </label>
+
+            <div class="detail">
+              <span class="detail-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6.2 6.2 17.8 17.8" />
+                  <path d="M17.8 6.2 6.2 17.8" />
+                </svg>
+              </span>
+              <span class="detail-label">כשהחברותא סוגרת ספר</span>
+              <span class="detail-field">
+                <select class="input" id="closePolicy">
+                  <option value="ask">לשאול אותי</option>
+                  <option value="always">לסגור גם כאן</option>
+                  <option value="never">לא לסגור</option>
+                </select>
+              </span>
             </div>
-            <p class="hint">שני הצדדים צריכים לבחור באותה דרך חיבור ובאותו קוד.</p>
+
+            <div class="detail">
+              <span class="detail-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5.5 6h13v9h-13z" />
+                  <path d="M3 18.4h18" />
+                </svg>
+              </span>
+              <span class="detail-label">שם המכשיר שלי</span>
+              <span class="detail-field">
+                <input class="input" id="nameInput" type="text" autocomplete="off" />
+                <button class="btn btn-tonal" id="nameButton" type="button">שמירה</button>
+              </span>
+            </div>
+          </section>
+          <section class="card" id="reportCard">
+            <h2 class="card-title">דיווח למפתח</h2>
+            <label class="label" for="reportDetails">מה קרה ומה ציפיתם שיקרה?</label>
+            <textarea class="input" id="reportDetails" rows="6" maxlength="6000" placeholder="תארו את התקלה ואת הצעדים לשחזור שלה"></textarea>
+            <p class="hint">הדיווח מועבר באמצעות מערכת הדיווחים של אוצריא. לפני השליחה יוצג אישור. קוד החברותא אינו מצורף.</p>
+            <button class="btn btn-primary" id="sendReport" type="button">שליחת דיווח</button>
+            <p class="hint" id="reportStatus" role="status" aria-live="polite"></p>
           </section>
 
+
+          <section class="card" id="readinessCard" aria-labelledby="readinessTitle">
+            <div class="card-head">
+              <h2 class="card-title" id="readinessTitle">בדיקת מוכנות בשני הצדדים</h2>
+              <button class="btn btn-ghost" id="checkReadiness" type="button">בדיקה מחדש</button>
+            </div>
+            <p class="hint">המצב מתעדכן אוטומטית. בדיקת החברותא מבוססת על הדיווח האחרון שהתקבל ממנה.</p>
+            <div class="readiness-sides" id="readinessList" aria-live="polite"></div>
+          </section>
           <!-- כרטיס ראשי: מצב החיבור והזיווג, במקום אחד -->
           <section class="card hero">
             <span class="hero-aura" aria-hidden="true"></span>
@@ -192,13 +253,9 @@
               <span class="card-title">החברותא סגרה</span>
             </div>
             <p class="hint">
-              <b id="closeList"></b><br />
-              לסגור גם כאן? מה שתשאירו פתוח יישאר פתוח, ולא תישאלו עליו שוב.
+              בחרו לכל ספר אם לסגור גם כאן או להשאיר אותו פתוח.
             </p>
-            <div class="field">
-              <button class="btn btn-primary" id="closeYes" type="button">לסגור גם כאן</button>
-              <button class="btn btn-ghost" id="closeNo" type="button">להשאיר פתוח</button>
-            </div>
+            <ul class="close-list" id="closeList"></ul>
           </section>
 
           <section class="card">
@@ -256,55 +313,6 @@
             </button>
 
 
-            <div class="detail">
-              <span class="detail-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M4.2 12h15.6" />
-                  <path d="M14.6 6.8 19.8 12l-5.2 5.2" />
-                </svg>
-              </span>
-              <span class="detail-label">סנכרון מקום הלימוד</span>
-              <span class="detail-field">
-                <label class="switch">
-                  <input type="checkbox" id="locationToggle" checked />
-                  <span class="switch-track" aria-hidden="true">
-                    <span class="switch-knob"></span>
-                  </span>
-                  <span class="switch-text" id="locationText">בודק…</span>
-                </label>
-              </span>
-            </div>
-
-            <div class="detail">
-              <span class="detail-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M6.2 6.2 17.8 17.8" />
-                  <path d="M17.8 6.2 6.2 17.8" />
-                </svg>
-              </span>
-              <span class="detail-label">כשהחברותא סוגרת ספר</span>
-              <span class="detail-field">
-                <select class="input" id="closePolicy">
-                  <option value="ask">לשאול אותי</option>
-                  <option value="always">לסגור גם כאן</option>
-                  <option value="never">לא לסגור</option>
-                </select>
-              </span>
-            </div>
-
-            <div class="detail">
-              <span class="detail-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M5.5 6h13v9h-13z" />
-                  <path d="M3 18.4h18" />
-                </svg>
-              </span>
-              <span class="detail-label">שם המכשיר שלי</span>
-              <span class="detail-field">
-                <input class="input" id="nameInput" type="text" autocomplete="off" />
-                <button class="btn btn-tonal" id="nameButton" type="button">שמירה</button>
-              </span>
-            </div>
           </section>
 
           <!--
@@ -442,6 +450,7 @@
     </div>
 
     <script src="js/theme.js"></script>
+    <script src="js/readiness.js"></script>
     <script src="js/companion.js"></script>
     <script src="js/remote/sha256.js"></script>
     <script src="js/remote/protocol.js"></script>

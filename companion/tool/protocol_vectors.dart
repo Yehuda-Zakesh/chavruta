@@ -31,6 +31,22 @@ const List<String> roomCodes = [
 
 List<SyncMessage> messages() => [
   const SyncMessage(
+    type: SyncMessageType.readiness,
+    roomHash: '',
+    senderId: '0123456789abcdef',
+    senderName: 'מחשב א',
+    timestampMs: 1760000000000,
+    sequence: 6,
+    readiness: {
+      'pluginVersion': '7.0.0',
+      'appVersion': '0.9.98',
+      'network': true,
+      'syncAllowed': true,
+      'backgroundEnabled': true,
+      'engine': 'background',
+    },
+  ),
+  const SyncMessage(
     type: SyncMessageType.location,
     roomHash: '',
     senderId: '0123456789abcdef',
@@ -88,6 +104,7 @@ SyncMessage withRoom(SyncMessage m, String room) => SyncMessage(
   sequence: m.sequence,
   location: m.location,
   entries: m.entries,
+  readiness: m.readiness,
 );
 
 Map<String, Object?> vectors() {

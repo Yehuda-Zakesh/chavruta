@@ -332,6 +332,7 @@ const RelayTransport = (function () {
 
     _loop: async function (gen, roomHash) {
       let backoff = BACKOFF_MIN_MS;
+      let recovering = false;
       while (this._current(gen)) {
         let body;
         const self = this;
@@ -352,6 +353,7 @@ const RelayTransport = (function () {
           );
         } catch (e) {
           if (!this._current(gen)) return;
+          recovering = true;
           this._poll = null;
           const kind = e.kind || 'network';
           this._setStatus({ state: 'error', errorKind: kind, error: e.message });
@@ -373,6 +375,7 @@ const RelayTransport = (function () {
           // ענה מישהו שאינו השרת — בדרך כלל מסנן תוכן שמחזיר דף חסימה
           // ב-200. זה אינו "אין אינטרנט", ולכן מסווג בנפרד.
           this._setStatus({ state: 'error', errorKind: 'invalid', error: 'תשובה לא צפויה מהשרת' });
+          recovering = true;
           await this._wait(backoff);
           backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
           continue;
@@ -410,6 +413,12 @@ const RelayTransport = (function () {
           this._since = reply.next;
         }
         this._deliver(reply.messages);
+        // חזרה מהרשת מחזירה גם את הנוכחות והספרים מיד. המתנה לפעימה
+        // התקופתית משאירה את שני הצדדים עם רשימת מחוברים ריקה אחרי ניתוק.
+        if (recovering) {
+          recovering = false;
+          this._safeResync();
+        }
       }
     },
 

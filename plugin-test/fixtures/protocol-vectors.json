@@ -73,6 +73,7 @@
   ],
   "code": "דף יומי",
   "messages": [
+    "{\"v\":1,\"t\":\"ready\",\"room\":\"61d17cd975f7d984\",\"src\":\"0123456789abcdef\",\"name\":\"מחשב א\",\"ts\":1760000000000,\"seq\":6,\"loc\":null,\"ready\":{\"pluginVersion\":\"7.0.0\",\"appVersion\":\"0.9.98\",\"network\":true,\"syncAllowed\":true,\"backgroundEnabled\":true,\"engine\":\"background\"},\"sig\":\"594f672e5787bfd1e53b88dcb9a01212\"}",
     "{\"v\":1,\"t\":\"loc\",\"room\":\"61d17cd975f7d984\",\"src\":\"0123456789abcdef\",\"name\":\"מחשב א\",\"ts\":1760000000000,\"seq\":7,\"loc\":{\"bookId\":\"ברכות\",\"index\":42,\"ref\":\"ברכות, דף ד.\"},\"sig\":\"abfea9e0655a5cd98befe404d67bc7ce\"}",
     "{\"v\":1,\"t\":\"hi\",\"room\":\"61d17cd975f7d984\",\"src\":\"fedcba9876543210\",\"name\":\"שם עם \\\"מרכאות\\\" ו\\\\לוכסן\\n\",\"ts\":1760000000001,\"seq\":1,\"loc\":null,\"sig\":\"dae50b18751f911a25dbafb64459db4a\"}",
     "{\"v\":1,\"t\":\"bye\",\"room\":\"61d17cd975f7d984\",\"src\":\"fedcba9876543210\",\"name\":\"x\\u0001\\u001f 😀\",\"ts\":1760000000002,\"seq\":2,\"loc\":null,\"sig\":\"af2545a29b17d8541580542e88cbe8d9\"}",

@@ -193,6 +193,7 @@ test('שרת שנעלם: מצב שגיאת רשת, וחזרה לבד כשהוא 
   assert.equal(t.status().errorKind, 'network');
   server.down = false;
   await until(() => t.status().state === 'online', 8000, 'חזרה אחרי ניתוק');
+  await until(() => t.resyncs() > 0, 1000, 'הנוכחות והשולחן משודרים מחדש מיד');
   t.stop();
 });
 
