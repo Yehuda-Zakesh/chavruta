@@ -1,0 +1,23 @@
+name: chavruta_android
+description: מתאם חברותא לאנדרואיד — אותו מתאם בדיוק, באפליקציה שרצה לצד אוצריא בטלפון.
+publish_to: none
+# הגרסה היא של המתאם (companion/pubspec.yaml); מספר הבנייה נקבע ב-CI.
+version: 7.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # הליבה של המתאם — פרוטוקול, תעבורה, שולחן משותף ו-API מקומי — היא
+  # אותו קוד שרץ במחשב. כאן רק עוטפים אותה באפליקציה.
+  chavruta_companion:
+    path: ../companion
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

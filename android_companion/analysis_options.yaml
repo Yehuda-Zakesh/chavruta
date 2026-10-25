@@ -1,0 +1,5 @@
+# קיים כדי ש-`flutter create` ב-CI לא ייצר קובץ שמפנה ל-flutter_lints,
+# שאינה תלות של הפרויקט.
+analyzer:
+  exclude:
+    - build/**
