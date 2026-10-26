@@ -12,12 +12,10 @@
   "minAppVersion": "0.9.98.2",
   "sdkVersion": "1.x",
   "permissions": [
-    "app.info.read",
     "app.open_url",
     "app.startup_contributions",
     "app.run_on_startup",
     "app.background_keep_alive",
-    "events.subscribe:theme.changed",
     "events.subscribe:reader.current_ref_changed",
     "events.subscribe:workspace.changed",
     "workspace.read",
@@ -25,10 +23,7 @@
     "reader.open",
     "navigation.write",
     "network.localhost",
-    "network.access",
-    "plugin.storage.read",
-    "plugin.storage.write",
-    "ui.feedback"
+    "network.access"
   ],
   "network": {
     "enabled": true,
