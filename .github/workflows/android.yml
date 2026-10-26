@@ -1,0 +1,129 @@
+name: Android
+
+# מתאם חברותא לאנדרואיד: אותה ליבה של companion/, עטופה באפליקציית Flutter.
+# כל בנייה מ-main נתלית בשחרור הקבוע `android-test` (prerelease), כדי שאפשר
+# יהיה להוריד את ה-APK ישירות מהטלפון. התג אינו `v*`, ולכן אינו נוגע
+# בקידום הגרסאות של release.yml. ב-PR נבנה ונבדק בלבד, בלי פרסום.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android_companion/**'
+      - 'companion/lib/**'
+      - 'companion/pubspec.yaml'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android_companion/**'
+      - 'companion/lib/**'
+      - 'companion/pubspec.yaml'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: מתאם לאנדרואיד — APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # בריפו נשמרים רק הקבצים שכתבנו (מניפסט, Kotlin, Dart, אייקונים). השאר
+      # — Gradle, משאבים — נוצר כאן לפי גרסת Flutter של הבנייה. `flutter
+      # create` אינו דורס קובץ קיים.
+      - name: השלמת קובצי הפלטפורמה
+        working-directory: android_companion
+        run: |
+          flutter create --platforms=android --project-name chavruta_android --org io.github.yehudazakesh .
+          # הבדיקה לדוגמה של התבנית (מונה לחיצות) אינה מתקמפלת מול האפליקציה
+          # הזאת — ובלעדיה `flutter test` מריץ את כל הבדיקות שלנו.
+          rm -f test/widget_test.dart
+          flutter --version
+
+      - name: analyze
+        working-directory: android_companion
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos lib test
+
+      # כל הבדיקות שבתיקייה, כולל השינה וההתעוררות על הפורטים האמיתיים.
+      - name: בדיקות
+        working-directory: android_companion
+        run: flutter test
+
+      # גרסת האפליקציה היא גרסת המתאם, ש-release.yml מקדם.
+      - name: בנייה
+        working-directory: android_companion
+        run: |
+          VERSION=$(grep -oP "companionVersion = '\K[^']+" ../companion/lib/version.dart)
+          echo "גרסה: $VERSION"
+          flutter build apk --release --build-name "$VERSION" --build-number ${{ github.run_number }}
+
+      # אנדרואיד מתקין עדכון רק אם הוא חתום **באותו מפתח** כמו הגרסה
+      # המותקנת, ולכן המפתח הוא זהות האפליקציה: מי שמחזיק בו יכול להפיץ
+      # "עדכון" שיותקן מעליה. הוא נשמר בסודות הריפו ולעולם לא בקוד:
+      #   ANDROID_KEYSTORE_BASE64  — קובץ ה-keystore בקידוד base64
+      #   ANDROID_KEYSTORE_PASSWORD — הסיסמה (אותה סיסמה למאגר ולמפתח)
+      #   ANDROID_KEY_ALIAS         — שם המפתח במאגר
+      # בלי הסודות (ובכל PR מפורק, שאין לו גישה אליהם) ה-APK נשאר חתום
+      # במפתח ה-debug שנוצר מחדש בכל מכונה — עובד, אבל כל בנייה דורשת להסיר
+      # את הקודמת לפני ההתקנה.
+      - name: חתימה
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          APK=android_companion/build/app/outputs/flutter-apk/app-release.apk
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::אין מפתח חתימה בסודות הריפו — ה-APK חתום במפתח debug זמני, ובנייה חדשה לא תותקן מעל קודמת."
+            cp "$APK" chavruta-companion.apk
+          else
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/signing.jks"
+            "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
+              --ks "$RUNNER_TEMP/signing.jks" \
+              --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD \
+              --ks-key-alias "$KEY_ALIAS" \
+              --out chavruta-companion.apk "$APK"
+            rm -f "$RUNNER_TEMP/signing.jks"
+          fi
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs chavruta-companion.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chavruta-companion-apk
+          path: chavruta-companion.apk
+          if-no-files-found: error
+
+      - name: פרסום בשחרור הבדיקה
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="בנייה ${GITHUB_RUN_NUMBER} מהענף ${GITHUB_REF_NAME}, commit ${GITHUB_SHA::7}.
+
+          התקנה: מורידים את chavruta-companion.apk בטלפון ופותחים אותו (צריך לאשר התקנה ממקור לא ידוע)."
+          if ! gh release view android-test >/dev/null 2>&1; then
+            gh release create android-test --prerelease --target "$GITHUB_SHA" \
+              --title "מתאם חברותא לאנדרואיד — בנייה לבדיקה" --notes "$NOTES"
+          fi
+          gh release upload android-test chavruta-companion.apk --clobber
+          gh release edit android-test --notes "$NOTES"
