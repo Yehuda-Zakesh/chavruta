@@ -3,3 +3,4 @@
 analyzer:
   exclude:
     - build/**
+    - android/**
