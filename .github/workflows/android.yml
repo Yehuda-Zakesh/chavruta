@@ -110,7 +110,7 @@ jobs:
             echo "::warning::אין מפתח חתימה בסודות הריפו — ה-APK חתום במפתח debug זמני, ובנייה חדשה לא תותקן מעל קודמת."
             cp "$APK" chavruta-companion.apk
           else
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/signing.jks"
+            echo "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/signing.jks"
             "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
               --ks "$RUNNER_TEMP/signing.jks" \
               --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD \
