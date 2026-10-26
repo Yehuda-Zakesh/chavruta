@@ -80,9 +80,13 @@ void main() {
     return runner;
   }
 
+  /// תופס פורטים כמו שירות זר: מקבל חיבור וסוגר אותו מיד, כך שהסריקה של
+  /// התוסף נכשלת עליו וממשיכה הלאה.
   Future<void> occupy(Iterable<int> ports) async {
     for (final p in ports) {
-      occupied.add(await ServerSocket.bind(InternetAddress.loopbackIPv4, p));
+      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, p);
+      socket.listen((connection) => connection.destroy());
+      occupied.add(socket);
     }
   }
 
@@ -101,20 +105,28 @@ void main() {
     expect(await hello(port), HttpStatus.ok);
   }
 
+  /// שינה עם פעמון: הפורט תפוס בפועל, ואין מתאם שעונה באף פורט אחר.
+  /// (לא פונים לפעמון עצמו — פנייה אליו מעירה.)
   Future<void> expectDormantOn(CompanionRunner runner, int port) async {
     expect(runner.state, CompanionState.dormant);
     expect(runner.doorbellPort, port);
     expect(runner.snapshot(), isNull);
     expect(runner.retryPending, isFalse);
+    expect(await portFree(port), isFalse, reason: 'הפעמון מאזין על $port');
+    for (final p in rangePorts.where((p) => p != port)) {
+      // בפורט פנוי אין מתאם; וחיבור אליו ב-Windows נכשל רק אחרי כ-2 שניות.
+      if (await portFree(p)) continue;
+      expect(await helloOrNull(p), isNot(HttpStatus.ok), reason: 'פורט $p');
+    }
   }
 
-  test('שינה והתעוררות רגילות: המתאם עולה על הפורט שאחרי הפעמון', () async {
+  test('שינה והתעוררות רגילות: אותה סריקה של התוסף מוצאת את המתאם', () async {
     final runner = newRunner();
     await runner.boot();
     await expectDormantOn(runner, 45871);
 
-    // הסריקה של התוסף: הפעמון עונה 503, והפורט הבא כבר ער.
-    expect(await hello(45871), HttpStatus.serviceUnavailable);
+    // הפעמון עונה 503, והסריקה ממשיכה לפורט הבא — שכבר ער.
+    expect(await scan(), (port: 45872, trail: '503 200'));
     await expectActive(runner, 45872);
     expect(await portFree(45871), isTrue, reason: 'הפעמון נסגר');
 
@@ -122,7 +134,7 @@ void main() {
     await expectDormantOn(runner, 45871);
     expect(await portFree(45872), isTrue, reason: 'ה-API נסגר בשינה');
 
-    expect(await hello(45871), HttpStatus.serviceUnavailable);
+    expect(await scan(), (port: 45872, trail: '503 200'));
     await expectActive(runner, 45872);
     expect(nativeCalls, isNot(contains('stopService')));
   });
@@ -133,9 +145,17 @@ void main() {
     await runner.boot();
     await expectDormantOn(runner, 45875);
 
-    expect(await hello(45875), HttpStatus.serviceUnavailable);
+    // הסריקה הראשונה מצלצלת ולא מוצאת (הפעמון היה האחרון בטווח), ובלי
+    // להיתקע: הפנייה לפעמון מקבלת תשובה גם כשהוא מפנה את הפורט שלו.
+    final watch = Stopwatch()..start();
+    expect(await scan(), (port: null, trail: '- - - - 503'));
+    expect(watch.elapsed, lessThan(const Duration(seconds: 3)));
     await settle(runner);
-    // הגילוי בסריקה הבאה של התוסף: אותו פורט, עכשיו ער.
+    // הסריקה הבאה מוצאת את המתאם על אותו פורט.
+    expect(
+      await scan(),
+      (port: 45875, trail: '- - - - 200'),
+    );
     await expectActive(runner, 45875);
     expect(runner.startError, isNull);
     expect(nativeCalls, isNot(contains('stopService')));
@@ -188,13 +208,17 @@ void main() {
     expect(runner.retryPending, isTrue);
     expect(nativeCalls, isNot(contains('stopService')));
 
+    // בלי פעמון ובלי מתאם: סריקה לא מוצאת ולא מעירה דבר.
+    expect(await scan(), (port: null, trail: '- - - - -'));
+
     failDoorbell = false;
     await release(45873);
     await waitFor(() => runner.doorbellPort != null);
     await expectDormantOn(runner, 45873);
 
-    expect(await hello(45873), HttpStatus.serviceUnavailable);
+    expect(await scan(), (port: null, trail: '- - 503 - -'));
     await settle(runner);
+    expect(await scan(), (port: 45873, trail: '- - 200'));
     await expectActive(runner, 45873);
   });
 
@@ -216,12 +240,15 @@ void main() {
     expect(runner.state, CompanionState.dormant);
     expect(runner.retryPending, isTrue);
 
+    expect(await scan(), (port: null, trail: '- - - - -'));
+
     await release(45872);
     await waitFor(() => runner.doorbellPort != null);
     await expectDormantOn(runner, 45872);
 
-    expect(await hello(45872), HttpStatus.serviceUnavailable);
+    expect(await scan(), (port: null, trail: '- 503 - - -'));
     await settle(runner);
+    expect(await scan(), (port: 45872, trail: '- 200'));
     await expectActive(runner, 45872);
   });
 
@@ -254,7 +281,8 @@ void main() {
       final ring = helloOrNull(45871);
       await waitFor(() => stopping != null);
       await stopping;
-      await ring;
+      expect(await ring, HttpStatus.serviceUnavailable,
+          reason: 'הפנייה שצלצלה מקבלת תשובה גם כשהמתאם נעצר');
       await settle(runner);
       runner.removeListener(onLog);
       await expectFullyStopped(runner);
@@ -276,7 +304,8 @@ void main() {
       final ring = helloOrNull(45871);
       await waitFor(() => stopping != null);
       await stopping;
-      await ring;
+      expect(await ring, HttpStatus.serviceUnavailable,
+          reason: 'הפנייה שצלצלה מקבלת תשובה גם כשהמתאם נעצר');
       await settle(runner);
       runner.removeListener(onLog);
       await expectFullyStopped(runner);
@@ -321,6 +350,19 @@ Future<int> hello(int port) async {
   } finally {
     client.close(force: true);
   }
+}
+
+/// הסריקה של התוסף: `/hello` על הטווח לפי הסדר, ממשיכה אחרי כל תשובה
+/// שאינה 200 ואחרי חיבור שנכשל, ועוצרת במתאם הראשון שעונה.
+/// `trail` = מה ענה כל פורט שנבדק, `-` לחיבור שנכשל.
+Future<({int? port, String trail})> scan() async {
+  final trail = <String>[];
+  for (final p in rangePorts) {
+    final status = await helloOrNull(p);
+    trail.add(status?.toString() ?? '-');
+    if (status == HttpStatus.ok) return (port: p, trail: trail.join(' '));
+  }
+  return (port: null, trail: trail.join(' '));
 }
 
 Future<int?> helloOrNull(int port) async {

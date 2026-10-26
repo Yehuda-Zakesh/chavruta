@@ -299,7 +299,9 @@ class CompanionRunner extends ChangeNotifier {
         startError =
             'לא נמצא פורט פנוי בטווח $localApiFirstPort-$localApiLastPort';
         log('$startError — אולי מתאם אחר כבר רץ.');
-        await hub.dispose();
+        // לא `hub.dispose`: ה-hub לא עלה ולא הכריז נוכחות, ופרידה ממנו הייתה
+        // משדרת לחברותא על קישור הבלוטות' לחינם.
+        await hub.transport.dispose();
         return false;
       }
 
