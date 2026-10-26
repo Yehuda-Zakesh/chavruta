@@ -229,3 +229,27 @@ jobs:
           files: |
             dist/chavruta-setup-*.exe
             dist/*.otzplugin
+
+      # שליחה לחנות התוספים של אוצריא (otzaria.org). התוסף כבר קיים בחנות,
+      # ולכן גרסה חדשה עולה מיד, בלי אישור מנהל. נדרשים הסודות OTZARIA_USER
+      # ו-OTZARIA_PASSWORD של חשבון החנות שיצר את התוסף; בלעדיהם השלב מאמת
+      # בלבד — והאזהרה כאן אומרת זאת, כדי ששחרור שלא נשלח לא ייראה כשלם.
+      - name: חנות אוצריא — בדיקת סודות
+        if: steps.version.outputs.release == 'true'
+        shell: pwsh
+        env:
+          OTZARIA_USER: ${{ secrets.OTZARIA_USER }}
+          OTZARIA_PASSWORD: ${{ secrets.OTZARIA_PASSWORD }}
+        run: |
+          if (-not $env:OTZARIA_USER -or -not $env:OTZARIA_PASSWORD) {
+            Write-Output "::warning::אין OTZARIA_USER/OTZARIA_PASSWORD בסודות הריפו — הגרסה לא נשלחה לחנות אוצריא. יש להעלות את ה-.otzplugin מה-Release ידנית."
+          }
+
+      - name: חנות אוצריא — שליחה
+        if: steps.version.outputs.release == 'true'
+        uses: Otzaria/otzaria-plugin-validator@v1.19.1
+        with:
+          path: plugin
+          fail-on-warnings: 'true'
+          otzaria-user: ${{ secrets.OTZARIA_USER }}
+          otzaria-password: ${{ secrets.OTZARIA_PASSWORD }}

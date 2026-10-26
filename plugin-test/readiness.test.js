@@ -40,9 +40,12 @@ test('אין חיבור ואין גרסה אינם מפורשים כמוכנות
 });
 test('תאימות אוצריא מתחילה בגרסת המינימום שבמניפסט', () => {
   const manifest = require('../plugin/manifest.json');
-  assert.equal(manifest.minAppVersion, '0.9.99');
-  for (const [version, expected] of [['0.9.98', 'error'], [manifest.minAppVersion, 'ok'],
-    ['0.10.0', 'ok'], ['1.0.0', 'ok']]) {
+  assert.equal(manifest.minAppVersion, '0.9.98.2');
+  assert.equal(Readiness.minAppVersion, manifest.minAppVersion);
+  // plugin.boot מדווח גרסת תיקון כרכיב רביעי (0.9.98+99802 ← "0.9.98.2").
+  for (const [version, expected] of [['0.9.97', 'error'], ['0.9.98', 'error'], ['0.9.98.1', 'error'],
+    [manifest.minAppVersion, 'ok'], ['0.9.98.2+99802', 'ok'], ['0.9.98.3', 'ok'], ['0.9.99', 'ok'],
+    ['0.9.99+99900', 'ok'], ['0.10.0', 'ok'], ['1.0.0', 'ok'], ['0.9', 'unknown']]) {
     const info = { ...local, appVersion: version };
     for (const side of Readiness.evaluate(info, state(info), 'remote', now)) {
       assert.equal(side.checks.find(c => c.label === 'גרסת אוצריא').kind, expected);

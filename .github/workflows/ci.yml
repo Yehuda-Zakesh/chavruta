@@ -59,6 +59,15 @@ jobs:
         shell: pwsh
         run: ./tool/pack-plugin.ps1 -Output dist
 
+      # אותן בדיקות כמו בהעלאה לחנות אוצריא (אזהרות חוסמות), מול מפרט
+      # ה-SDK העדכני. אימות בלבד — השליחה לחנות היא ב-release.yml.
+      - name: התוסף — אימות כמו בחנות
+        uses: Otzaria/otzaria-plugin-validator@v1.19.1
+        with:
+          path: plugin
+          fail-on-warnings: 'true'
+          publish: 'false'
+
       # כך אפשר להוריד גרסה לבדיקה מכל commit, בלי לתייג שחרור.
       - name: העלאת תוצרים
         uses: actions/upload-artifact@v4

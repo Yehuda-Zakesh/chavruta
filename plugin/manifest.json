@@ -9,7 +9,7 @@
   "homepage": "https://github.com/Yehuda-Zakesh/chavruta",
   "entrypoint": "index.html",
   "icon": "icon/icon.png",
-  "minAppVersion": "0.9.99",
+  "minAppVersion": "0.9.98.2",
   "sdkVersion": "1.x",
   "permissions": [
     "app.info.read",

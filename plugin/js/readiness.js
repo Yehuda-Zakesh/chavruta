@@ -20,15 +20,25 @@ const Readiness = (function () {
     };
   }
 
+  // גרסת תיקון (hotfix) של אוצריא היא רכיב רביעי: 0.9.98.2. כמו
+  // PluginVersionUtils באוצריא — משווים את כל הרכיבים, ורכיב חסר נחשב 0.
+  const MIN_APP_VERSION = '0.9.98.2';
+
   function versionParts(value) {
-    const match = /^(\d+)\.(\d+)\.(\d+)(?:[+-].*)?$/.exec(value || '');
-    return match ? match.slice(1).map(Number) : null;
+    const match = /^(\d+(?:\.\d+){2,3})(?:[+-].*)?$/.exec(value || '');
+    return match ? match[1].split('.').map(Number) : null;
   }
 
   function supportsApp(value) {
     const v = versionParts(value);
     if (!v) return null;
-    return v[0] > 0 || v[1] > 9 || (v[1] === 9 && v[2] >= 99);
+    const min = versionParts(MIN_APP_VERSION);
+    for (let i = 0; i < Math.max(v.length, min.length); i++) {
+      const a = v[i] || 0;
+      const b = min[i] || 0;
+      if (a !== b) return a > b;
+    }
+    return true;
   }
 
   function checks(info, owner) {
@@ -40,7 +50,7 @@ const Readiness = (function () {
         ? (info.backgroundEnabled ? 'מנוע הרקע פעיל' : 'מנוע הרקע פעיל; יש לאשר גם המשך ריצה ברקע')
         : owner === 'foreground' ? 'הסנכרון פועל בלשונית; אשרו ריצה בעלייה והמשך ריצה ברקע' : 'טרם זוהה מנוע פעיל' },
       { label: 'גרסת אוצריא', kind: appOk === null ? 'unknown' : appOk ? 'ok' : 'error', text: info.appVersion
-        ? info.appVersion + (appOk === false ? ' — נדרשת 0.9.99 ומעלה' : '') : 'גרסה לא ידועה' },
+        ? info.appVersion + (appOk === false ? ' — נדרשת ' + MIN_APP_VERSION + ' ומעלה' : '') : 'גרסה לא ידועה' },
     ];
   }
 
@@ -78,5 +88,5 @@ const Readiness = (function () {
     return sides;
   }
 
-  return { fromBoot: fromBoot, evaluate: evaluate };
+  return { fromBoot: fromBoot, evaluate: evaluate, minAppVersion: MIN_APP_VERSION };
 })();
