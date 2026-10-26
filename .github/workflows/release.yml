@@ -30,6 +30,9 @@ jobs:
   windows:
     name: בנייה ל-Windows
     runs-on: windows-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      release: ${{ steps.version.outputs.release }}
     steps:
       # fetch-depth: 0 — הקידום צריך את כל התגים כדי לא לדרוך על אחד קיים
       - uses: actions/checkout@v4
@@ -253,3 +256,13 @@ jobs:
           fail-on-warnings: 'true'
           otzaria-user: ${{ secrets.OTZARIA_USER }}
           otzaria-password: ${{ secrets.OTZARIA_PASSWORD }}
+
+  # ה-APK נבנה מהתג שנוצר זה עתה, ומצורף לאותו Release
+  android:
+    name: מתאם לאנדרואיד
+    needs: windows
+    if: needs.windows.outputs.release == 'true'
+    uses: ./.github/workflows/android.yml
+    with:
+      tag: ${{ needs.windows.outputs.tag }}
+    secrets: inherit

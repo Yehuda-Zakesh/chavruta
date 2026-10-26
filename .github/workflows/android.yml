@@ -20,6 +20,17 @@ on:
       - 'companion/pubspec.yaml'
       - '.github/workflows/android.yml'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'תג של שחרור קיים (למשל v8) — בונה ממנו ומצרף את ה-APK אליו'
+        type: string
+        default: ''
+  # release.yml קורא לכאן אחרי שהתג נוצר, כדי שה-APK יצורף לשחרור עצמו
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -34,6 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-java@v4
         with:
@@ -113,8 +126,16 @@ jobs:
           path: chavruta-companion.apk
           if-no-files-found: error
 
+      # שחרור רשמי: ה-APK מצורף לאותו Release של המתקין והתוסף
+      - name: צירוף לשחרור
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" chavruta-companion.apk --clobber
+
       - name: פרסום בשחרור הבדיקה
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && inputs.tag == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
