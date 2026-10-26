@@ -25,15 +25,19 @@ const Duration dormantAfter = Duration(minutes: 3);
 
 const Duration _idleCheckInterval = Duration(seconds: 15);
 
+/// כל כמה זמן מנסים שוב לתפוס פורט כשכל הטווח תפוס — אפילו לפעמון.
+const Duration portRetryInterval = Duration(seconds: 30);
+
 enum CompanionState {
   /// כבוי — המשתמש עצר אותו.
   stopped,
 
-  /// המתאם המלא רץ: משדר, קולט ועונה לתוסף.
+  /// המתאם המלא רץ: משדר, קולט ועונה לתוסף. רק כשיש API ו-hub חיים.
   active,
 
   /// אוצריא אינה פונה אליו. אין שידור, אין קליטה ואין טיימרים — רק
   /// "פעמון" על פורט ב-loopback, שמעיר את המתאם כשהתוסף מחפש אותו.
+  /// כשכל הטווח תפוס, גם הפעמון חסר, ויש במקומו ניסיון חוזר מתוזמן.
   dormant,
 }
 
@@ -49,7 +53,29 @@ enum CompanionState {
 /// הפעמון יושב על הפורט הפנוי הראשון; כשמגיעה אליו פנייה הוא מעיר את
 /// המתאם המלא — שעולה על הפורט **הבא**, כי הפעמון עדיין תופס את שלו — ורק
 /// אז עונה 503. אותה סריקה ממשיכה לפורט הבא ומוצאת את המתאם ער.
+///
+/// כשאין פורט "הבא" (הפעמון על האחרון שפנוי), הפעמון מפנה את פורטו
+/// והמתאם עולה עליו; הסריקה הנוכחית כבר עברה אותו, והבאה תמצא אותו.
 class CompanionRunner extends ChangeNotifier {
+  CompanionRunner({
+    this.transportPort = lanPort,
+    this.retryInterval = portRetryInterval,
+    @visibleForTesting Future<HttpServer> Function(int port)? bindDoorbell,
+  }) : _bindDoorbell = bindDoorbell ?? _bindLoopback;
+
+  static Future<HttpServer> _bindLoopback(int port) =>
+      HttpServer.bind(InternetAddress.loopbackIPv4, port);
+
+  /// קושר את הפעמון לפורט. בבדיקות — כדי לדמות כישלון בדיוק ברגע שבין
+  /// סגירת המתאם לפתיחת הפעמון, בלי מרוץ על פורטים אמיתיים.
+  final Future<HttpServer> Function(int port) _bindDoorbell;
+
+  /// פורט ה-UDP של התעבורה. פרמטר בשביל בדיקות, כמו `LanTransport.port`.
+  final int transportPort;
+
+  /// ראו [portRetryInterval]. פרמטר כדי שבדיקות לא ימתינו חצי דקה.
+  final Duration retryInterval;
+
   final List<String> lines = [];
   IOSink? _file;
   Directory? _dir;
@@ -57,13 +83,15 @@ class CompanionRunner extends ChangeNotifier {
   LocalApi? _api;
   HttpServer? _doorbell;
   Timer? _idleTimer;
+  Timer? _retryTimer;
   DateTime _lastActive = DateTime.now();
   CompanionState _state = CompanionState.stopped;
   bool _busy = false;
 
   /// פעולות המעבר בין מצבים רצות אחת אחרי השנייה. פעמון שמצלצל באמצע
   /// כניסה לשינה, או לחיצה על "עצירה" באמצע התעוררות, היו אחרת פותחים
-  /// שני מתאמים או סוגרים אחד שעוד לא עלה.
+  /// שני מתאמים או סוגרים אחד שעוד לא עלה. מכאן גם שכל פעולה בתור בודקת
+  /// את המצב **כשהיא רצה** ולא כשנכנסה לתור: עצירה שקדמה לה משנה אותו.
   Future<void> _queue = Future<void>.value();
 
   /// למה ההפעלה האחרונה נכשלה, לתצוגה. `null` = לא נכשלה.
@@ -73,6 +101,14 @@ class CompanionRunner extends ChangeNotifier {
   bool get running => _state != CompanionState.stopped;
   bool get busy => _busy;
   int? get port => _api?.port ?? _doorbell?.port;
+
+  /// הפורט שהפעמון תופס כרגע. `null` = אין פעמון.
+  @visibleForTesting
+  int? get doorbellPort => _doorbell?.port;
+
+  /// האם ממתין ניסיון חוזר לתפוס פורט.
+  @visibleForTesting
+  bool get retryPending => _retryTimer != null;
 
   /// אותו מצב ש-`/hello` מחזיר לתוסף. `null` כשהמתאם אינו ער.
   Map<String, Object?>? snapshot() => _hub?.snapshot();
@@ -105,7 +141,7 @@ class CompanionRunner extends ChangeNotifier {
       if (atBoot) {
         await _sleep();
       } else {
-        await _activate();
+        await _wake();
       }
     });
   }
@@ -115,7 +151,7 @@ class CompanionRunner extends ChangeNotifier {
     if (_state != CompanionState.stopped) return;
     if (!await _prepare()) return;
     await Native.startService();
-    await _activate();
+    await _wake();
   });
 
   /// "עצירת המתאם" במסך. עוצר הכול, כולל הפעמון והשירות.
@@ -123,6 +159,8 @@ class CompanionRunner extends ChangeNotifier {
     if (_state == CompanionState.stopped) return;
     _idleTimer?.cancel();
     _idleTimer = null;
+    _retryTimer?.cancel();
+    _retryTimer = null;
     await _shutDownActive();
     await _closeDoorbell();
     _state = CompanionState.stopped;
@@ -169,57 +207,18 @@ class CompanionRunner extends ChangeNotifier {
     }
   }
 
-  /// מעלה את המתאם המלא. מכל מצב — כבוי או שינה.
-  Future<void> _activate() async {
+  /// מעיר את המתאם המלא, מכל מצב. אם אין לו פורט — לא כבה, אלא נשאר
+  /// בשינה עם פעמון (או עם ניסיון חוזר), כדי שמחסור זמני בפורטים לא
+  /// יהפוך לכיבוי שרק המשתמש יכול לבטל.
+  Future<void> _wake() async {
     if (_state == CompanionState.active) return;
-    startError = null;
-    final dir = _dir!;
-
-    final config = await CompanionConfig.load(storageDir: dir);
-    if (config.deviceName.trim().isEmpty || config.deviceName == 'localhost') {
-      config.deviceName = await Native.deviceName();
-      await config.save();
-    }
-
-    final transport = LanTransport(
-      roomCodeProvider: () => config.roomCode,
-      onLog: log,
-    );
-    final hub = SyncHub(config: config, transport: transport, onLog: log);
-    final api = LocalApi(hub: hub, version: companionVersion, onLog: log);
-
-    // הפעמון נסגר רק **אחרי** שהמתאם תפס פורט, כדי שהמתאם יעלה על הפורט
-    // הבא בטווח — זה שהסריקה של התוסף מגיעה אליו מיד אחרי הפעמון.
-    final bound = await api.start();
-    await _closeDoorbell();
-    if (!bound) {
-      startError =
-          'לא נמצא פורט פנוי בטווח $localApiFirstPort-$localApiLastPort';
-      log('$startError — כנראה שהמתאם כבר רץ.');
-      await hub.dispose();
-      _state = CompanionState.stopped;
-      await Native.stopService();
-      return;
-    }
-
-    await hub.start();
-    _hub = hub;
-    _api = api;
-    _state = CompanionState.active;
-    _lastActive = DateTime.now();
-    _idleTimer?.cancel();
-    _idleTimer = Timer.periodic(_idleCheckInterval, (_) => _checkIdle());
-    await Native.setStatus('ער ומסנכרן');
-    log(
-      config.isPaired
-          ? 'ער ומחובר לחברותא בשם "${config.deviceName}"'
-          : 'ער — לא מזווג, ממתין לקוד חברותא מהתוסף באוצריא',
-    );
+    if (await _activate()) return;
+    log('$startError — נשאר במצב שינה עד שיתפנה פורט');
+    await _rest();
   }
 
   /// נכנס למצב שינה: עוצר את המתאם המלא ומשאיר רק את הפעמון.
   Future<void> _sleep() async {
-    if (_state == CompanionState.dormant) return;
     _idleTimer?.cancel();
     _idleTimer = null;
     await _shutDownActive();
@@ -227,12 +226,109 @@ class CompanionRunner extends ChangeNotifier {
       // בלי פעמון אין מה שיעיר את המתאם, ושינה הייתה כיבוי שקט. עדיף
       // להישאר ער.
       log('לא ניתן לפתוח פעמון על אף פורט — נשאר ער');
-      await _activate();
+      if (await _activate()) return;
+      log('$startError');
+    }
+    await _rest();
+  }
+
+  /// מצב שינה: הפעמון אם אפשר לפתוח אותו, ואחרת ניסיון חוזר מתוזמן.
+  Future<void> _rest() async {
+    _state = CompanionState.dormant;
+    if (!await _openDoorbell()) {
+      log(
+        'אין פורט פנוי גם לפעמון — ניסיון נוסף בעוד '
+        '${retryInterval.inSeconds} שניות',
+      );
+      _scheduleRetry();
+      await Native.setStatus('ממתין לפורט פנוי');
       return;
     }
-    _state = CompanionState.dormant;
     await Native.setStatus('במצב שינה — ממתין לאוצריא');
     log('מצב שינה: ממתין שאוצריא תחפש את המתאם (פעמון על פורט ${_doorbell!.port})');
+  }
+
+  void _scheduleRetry() {
+    _retryTimer?.cancel();
+    _retryTimer = Timer(retryInterval, () {
+      _retryTimer = null;
+      unawaited(
+        _serial(() async {
+          if (_state != CompanionState.dormant || _doorbell != null) return;
+          await _rest();
+        }),
+      );
+    });
+  }
+
+  /// מעלה את ה-API וה-hub. מחזיר האם עלו; בכישלון לא נשאר שום משאב שלהם
+  /// פתוח, והסיבה ב-[startError]. המצב משתנה רק בהצלחה.
+  Future<bool> _activate() async {
+    // ער באמת רק כשיש API ו-hub; ראו [_shutDownActive].
+    if (_state == CompanionState.active) return true;
+    startError = null;
+    final dir = _dir!;
+    SyncHub? hub;
+    LocalApi? api;
+    bool paired;
+    String name;
+    try {
+      final config = await CompanionConfig.load(storageDir: dir);
+      if (config.deviceName.trim().isEmpty ||
+          config.deviceName == 'localhost') {
+        config.deviceName = await Native.deviceName();
+        await config.save();
+      }
+
+      final transport = LanTransport(
+        roomCodeProvider: () => config.roomCode,
+        onLog: log,
+        port: transportPort,
+      );
+      hub = SyncHub(config: config, transport: transport, onLog: log);
+      api = LocalApi(hub: hub, version: companionVersion, onLog: log);
+
+      // הפעמון נסגר רק **אחרי** שהמתאם תפס פורט, כדי שהמתאם יעלה על הפורט
+      // הבא בטווח — זה שהסריקה של התוסף מגיעה אליו מיד אחרי הפעמון. אם
+      // הפעמון החזיק את הפורט הפנוי האחרון, מפנים אותו למתאם.
+      var bound = await api.start();
+      final hadDoorbell = _doorbell != null;
+      await _closeDoorbell();
+      if (!bound && hadDoorbell) bound = await api.start();
+      if (!bound) {
+        startError =
+            'לא נמצא פורט פנוי בטווח $localApiFirstPort-$localApiLastPort';
+        log('$startError — אולי מתאם אחר כבר רץ.');
+        await hub.dispose();
+        return false;
+      }
+
+      await hub.start();
+      paired = config.isPaired;
+      name = config.deviceName;
+    } catch (e) {
+      startError = '$e';
+      log('ההתעוררות נכשלה: $e');
+      await _quietly(() async => api?.dispose());
+      await _quietly(() async => hub?.dispose());
+      return false;
+    }
+
+    _hub = hub;
+    _api = api;
+    _state = CompanionState.active;
+    _lastActive = DateTime.now();
+    _idleTimer?.cancel();
+    _idleTimer = Timer.periodic(_idleCheckInterval, (_) => _checkIdle());
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    await Native.setStatus('ער ומסנכרן');
+    log(
+      paired
+          ? 'ער ומחובר לחברותא בשם "$name"'
+          : 'ער — לא מזווג, ממתין לקוד חברותא מהתוסף באוצריא',
+    );
+    return true;
   }
 
   void _checkIdle() {
@@ -244,32 +340,42 @@ class CompanionRunner extends ChangeNotifier {
     }
     if (DateTime.now().difference(_lastActive) >= dormantAfter) {
       log('אוצריא לא סנכרנה דרך המתאם ${dormantAfter.inMinutes} דקות');
-      unawaited(_serial(_sleep));
+      unawaited(_dozeOff());
     }
   }
 
+  /// נכנס לשינה עכשיו, כאילו עברו [dormantAfter] בלי פנייה מאוצריא.
+  @visibleForTesting
+  Future<void> sleepNow() => _dozeOff();
+
+  Future<void> _dozeOff() => _serial(() async {
+    if (_state == CompanionState.active) await _sleep();
+  });
+
   /// סוגר את המתאם המלא. הודעת הפרידה יוצאת ב-`hub.dispose`, כך שהמחשב
-  /// רואה מיד שהטלפון יצא.
+  /// רואה מיד שהטלפון יצא. מכאן והלאה המתאם אינו ער: מי שקרא קובע לאן
+  /// הוא עובר — ובכל מקרה לא נשאר `active` בלי API ו-hub.
   Future<void> _shutDownActive() async {
     final api = _api;
     final hub = _hub;
     _api = null;
     _hub = null;
+    if (_state == CompanionState.active) _state = CompanionState.dormant;
     if (api != null) await api.dispose();
     if (hub != null) await hub.dispose();
   }
 
   Future<bool> _openDoorbell() async {
+    if (_doorbell != null) return true;
     for (var candidate = localApiFirstPort;
         candidate <= localApiLastPort;
         candidate++) {
       try {
-        final server = await HttpServer.bind(
-          InternetAddress.loopbackIPv4,
-          candidate,
-        );
+        final server = await _bindDoorbell(candidate);
         server.listen(_ring, onError: (Object e) => log('שגיאת פעמון: $e'));
         _doorbell = server;
+        _retryTimer?.cancel();
+        _retryTimer = null;
         return true;
       } on SocketException {
         continue;
@@ -278,14 +384,17 @@ class CompanionRunner extends ChangeNotifier {
     return false;
   }
 
-  /// בלי `force` ובלי המתנה: ההאזנה נפסקת מיד, והפנייה שהעירה את המתאם —
-  /// שעדיין ממתינה בתוך [_ring] — מקבלת את תשובתה. המתנה כאן הייתה נתקעת
-  /// עד שאותה פנייה תסתיים, והיא ממתינה להתעוררות הזאת עצמה.
+  /// בלי `force`: ההאזנה נפסקת, והפנייה שהעירה את המתאם — שעדיין ממתינה
+  /// בתוך [_ring] — מקבלת את תשובתה. ההמתנה כאן היא לסגירת הסוקט המאזין
+  /// בלבד ולא לחיבורים הפתוחים (כך `HttpServer.close` בלי `force`), ולכן
+  /// אינה נתקעת על אותה פנייה; היא נדרשת כדי שהפורט יהיה פנוי למתאם.
   Future<void> _closeDoorbell() async {
     final server = _doorbell;
     _doorbell = null;
     if (server == null) return;
-    unawaited(server.close().catchError((Object _) {}));
+    await _quietly(
+      () => server.close().timeout(const Duration(seconds: 2)),
+    );
   }
 
   /// פנייה לפעמון = אוצריא מחפשת את המתאם. מעירים, ואז עונים 503 כדי
@@ -294,7 +403,10 @@ class CompanionRunner extends ChangeNotifier {
     if (_state == CompanionState.dormant) {
       log('אוצריא מחפשת את המתאם (${request.uri.path}) — מתעורר');
       try {
-        await _serial(_activate).timeout(const Duration(seconds: 1));
+        await _serial(() async {
+          // עצירה שנכנסה לתור לפני הצלצול כבר רצה — לא מעירים אחריה.
+          if (_state == CompanionState.dormant) await _wake();
+        }).timeout(const Duration(seconds: 1));
       } on TimeoutException {
         // ההתעוררות ממשיכה ברקע; הסריקה הבאה של התוסף תמצא אותו.
       }
@@ -307,6 +419,14 @@ class CompanionRunner extends ChangeNotifier {
       await request.response.close();
     } catch (_) {
       // הפעמון כבר נסגר והחיבור איתו.
+    }
+  }
+
+  static Future<void> _quietly(Future<Object?> Function() action) async {
+    try {
+      await action();
+    } catch (_) {
+      // ניקוי בדרך החוצה — אין מה לעשות עם הכישלון.
     }
   }
 

@@ -52,19 +52,21 @@ jobs:
         working-directory: android_companion
         run: |
           flutter create --platforms=android --project-name chavruta_android --org io.github.yehudazakesh .
+          # הבדיקה לדוגמה של התבנית (מונה לחיצות) אינה מתקמפלת מול האפליקציה
+          # הזאת — ובלעדיה `flutter test` מריץ את כל הבדיקות שלנו.
+          rm -f test/widget_test.dart
           flutter --version
 
       - name: analyze
         working-directory: android_companion
         run: |
           flutter pub get
-          flutter analyze --no-fatal-infos lib test/plugin_install_test.dart
+          flutter analyze --no-fatal-infos lib test
 
-      # רק הבדיקות שלנו: `flutter create` מוסיף test/widget_test.dart של
-      # התבנית, שאינו מתקמפל מול האפליקציה הזאת.
+      # כל הבדיקות שבתיקייה, כולל השינה וההתעוררות על הפורטים האמיתיים.
       - name: בדיקות
         working-directory: android_companion
-        run: flutter test test/plugin_install_test.dart
+        run: flutter test
 
       # גרסת האפליקציה היא גרסת המתאם, ש-release.yml מקדם.
       - name: בנייה
