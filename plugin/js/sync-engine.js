@@ -34,12 +34,6 @@ const SyncEngine = (function () {
   const DESK_WORKSPACE_NAME = 'חברותא';
 
   /**
-   * מפתח האחסון שבו נשמרים הספרים שהיו פתוחים לפני המעבר האוטומטי
-   * לשולחן המשותף — כדי שהלשונית תציע להעביר אותם. ראו [ensureDesk].
-   */
-  const CARRY_KEY = 'carryPending';
-
-  /**
    * כל כמה זמן נסרק השולחן.
    *
    * **לאוצריא אין אירוע "נפתח טאב"** — `reader.getCurrentState` היא הדרך
@@ -73,6 +67,7 @@ const SyncEngine = (function () {
   let publishTimer = null;
   let lastSentKey = null;
   let listener = null;
+  let workspaceListener = null;
   let status = { connected: false, error: null, state: null, owner: false };
   let onStatusChange = function () {};
 
@@ -125,8 +120,14 @@ const SyncEngine = (function () {
   /** שאלת הסגירה האחרונה שהוצגה, כדי לא לחזור עליה בכל סבב. */
   let lastCloseAsk = null;
 
-  /** האם כבר ניסינו להיכנס לשולחן המשותף מעצמנו. ראו [ensureDesk]. */
-  let autoEnterDone = false;
+  /** מצב השער בבדיקה האחרונה; `null` = טרם נבדק. ראו [refreshLocationGate]. */
+  let locationGateOpen = null;
+
+  /** האם בדיקת שער רצה כרגע, כדי ששתי כניסות לא יטופלו פעמיים. */
+  let checkingGate = false;
+
+  /** העדכון האחרון מהחברותא שהגיע בזמן שהיינו מחוץ לשולחן המשותף. */
+  let pendingRemote = null;
 
   function sleep(ms) {
     return new Promise(function (resolve) {
@@ -198,6 +199,7 @@ const SyncEngine = (function () {
     // שתי נקודות החלטה על אותו דבר היו נסתרות זו את זו.
     const key = keyOf(location);
     if (key === lastSentKey) return;
+    if (!(await locationSyncOpen())) return;
     try {
       await Link.api.publish(location);
       lastSentKey = key;
@@ -245,6 +247,11 @@ const SyncEngine = (function () {
       queueDeskScan();
     };
     Otzaria.on('reader.current_ref_changed', listener);
+    workspaceListener = function () {
+      refreshLocationGate();
+      queueDeskScan();
+    };
+    Otzaria.on('workspace.changed', workspaceListener);
   }
 
   function detachListener() {
@@ -255,6 +262,8 @@ const SyncEngine = (function () {
     if (!listener) return;
     Otzaria.off('reader.current_ref_changed', listener);
     listener = null;
+    Otzaria.off('workspace.changed', workspaceListener);
+    workspaceListener = null;
   }
 
   /**
@@ -366,61 +375,56 @@ const SyncEngine = (function () {
   }
 
   /**
-   * נכנס לשולחן המשותף מעצמו, פעם אחת בכל ריצה.
+   * האם מקום הלימוד מסתנכרן עכשיו, בשני הכיוונים.
    *
-   * **מי שמזווג לחברותא אמור להיות בשולחן המשותף.** בלי זה הסנכרון
-   * שותק עד שהמשתמש ילחץ משהו — וזה בדיוק המצב שבו "הכול מחובר" אבל
-   * שום דבר לא קורה, שהוא הגרוע מכולם.
+   * **מחוץ לשולחן "חברותא" לא יוצא ולא נכנס כלום.** הכניסה לשולחן ידנית,
+   * ולכן אוצריא נפתחת בדרך כלל בשולחן פרטי. בלי השער הזה דף שהחברותא
+   * עוברת אליו היה פותח את הספר שלה בתוך השולחן הפרטי, ומה שקוראים שם
+   * היה נשלח אליה.
    *
-   * הספרים שהיו פתוחים לפני המעבר נשמרים, כדי שהלשונית תוכל לשאול מה
-   * מהם להעביר בפעם הבאה שהיא נפתחת. המעבר עצמו אינו סוגר אותם — הם
-   * נשארים בשולחן שממנו באנו.
+   * אוצריא בלי ממשק שולחנות היא החריג: אין בה שולחן להיכנס אליו, ומקום
+   * הלימוד הוא כל הסנכרון שיש. כש"עוד לא ידוע" השער סגור, והבדיקה הבאה
+   * תפתח אותו — עדיף עיכוב קטן מדליפה מהשולחן הפרטי.
    */
-  async function ensureDesk() {
-    if (autoEnterDone) return;
-    // הדגל נקבע רק אחרי שידוע אם ממשק השולחנות קיים כאן. בדיקה שנכשלה
-    // על גבול זמן מחזירה `null` (ראו [probeDeskApi]), וסימון הניסיון
-    // כ"נעשה" היה שורף את ההזדמנות היחידה שיש בכל ריצה: המשתמש נשאר
-    // מחוץ לשולחן המשותף עד הפעלה מחדש, והסנכרון שותק בלי סימן.
-    const supported = await probeDeskApi();
-    if (supported === null) return;
-    autoEnterDone = true;
-    if (!supported) return;
-    if (await inDeskWorkspace()) return;
+  async function locationSyncOpen() {
+    if (deskApi === null) await probeDeskApi();
+    if (deskApi === false) return true;
+    return inDeskWorkspace();
+  }
 
-    let carry = [];
+  /**
+   * מזהה כניסה לשולחן המשותף, ומשלים את מה שהשער עצר.
+   *
+   * מי שנכנס מצטרף לחברותא במקום שהיא נמצאת בו, אם היא זזה בינתיים ועדיין
+   * מחוברת; אחרת הוא מדווח על המקום שלו. בסדר הזה ולא בשניהם: דיווח לפני
+   * הניווט היה מחליף את שני הצדדים זה במקומו של זה.
+   */
+  async function refreshLocationGate() {
+    if (!owner || !running || checkingGate) return;
+    checkingGate = true;
     try {
-      carry = await readDesk();
-    } catch (e) {
-      carry = [];
+      const open = await locationSyncOpen();
+      const entered = open && locationGateOpen === false;
+      locationGateOpen = open;
+      if (!entered) return;
+      const remote = pendingRemote;
+      pendingRemote = null;
+      if (remote && syncLocation && partnerStillHere(remote)) {
+        await applyRemote(remote);
+      } else {
+        await republishCurrent();
+      }
+    } finally {
+      checkingGate = false;
     }
+  }
 
-    if (!(await enterDeskWorkspace())) return;
-
-    // **אומרים מה קרה.** מעבר שולחן הוא שינוי גדול על המסך, ומשתמש
-    // שנזרק לשולחן ריק בלי מילה אינו מבין אם משהו התקלקל.
-    try {
-      const call = Otzaria.call('ui.showSuccess', {
-        message:
-          'עברת לשולחן העבודה "חברותא" — כאן הספרים משותפים. ' +
-          'הספרים שהיו פתוחים נשארו בשולחן הקודם.',
-      });
-      if (call && typeof call.catch === 'function') call.catch(function () {});
-    } catch (e) {
-      // ההודעה היא שירות; אין לה השפעה על הסנכרון.
-    }
-
-    if (carry.length === 0) return;
-    try {
-      await callWithTimeout('storage.set', {
-        key: CARRY_KEY,
-        value: carry.map(function (book) {
-          return { b: book.b, i: book.i };
-        }),
-      });
-    } catch (e) {
-      // ההצעה היא נוחות; כישלון בשמירה אינו שובר את הסנכרון.
-    }
+  /** האם מי ששלח את [remote] עדיין מופיע ברשימת המחוברים. */
+  function partnerStillHere(remote) {
+    const peers = status.state && status.state.peers;
+    return Array.isArray(peers) && peers.some(function (peer) {
+      return peer && peer.id === remote.fromId;
+    });
   }
 
   /**
@@ -559,6 +563,7 @@ const SyncEngine = (function () {
   function startDeskScanning() {
     if (deskTimer) return;
     deskTimer = setInterval(function () {
+      refreshLocationGate();
       scanDesk(false);
     }, DESK_POLL_MS);
     scanDesk(true);
@@ -937,12 +942,8 @@ const SyncEngine = (function () {
           if (!current(token)) return;
         }
 
-        // מזווגים אך לא בשולחן המשותף — נכנסים אליו. בלי זה הסנכרון
-        // שותק אחרי כל הפעלה מחדש, כי זרימת ההתחברות רצה רק פעם אחת.
-        if (state.paired === true) {
-          await ensureDesk();
-          if (!current(token)) return;
-        }
+        await refreshLocationGate();
+        if (!current(token)) return;
 
         // השולחן לפני המקום, ובכוונה: פתיחת ספר מקדמת אותו, ואילו הסדר
         // היה הפוך היינו מנווטים למקום הנכון ומיד נזרקים ממנו.
@@ -950,7 +951,14 @@ const SyncEngine = (function () {
         if (!current(token)) return;
 
         if (syncLocation && state.hasUpdate && state.remote) {
-          await applyRemote(state.remote);
+          // המתאם כבר סימן את העדכון כנמסר, ולכן הוא נשמר כאן: אחרת מי
+          // שנכנס לשולחן היה נשאר בדף הישן עד שהחברותא תזוז שוב.
+          if (await locationSyncOpen()) {
+            pendingRemote = null;
+            await applyRemote(state.remote);
+          } else {
+            pendingRemote = state.remote;
+          }
         }
       } catch (e) {
         connected = false;
@@ -1038,7 +1046,8 @@ const SyncEngine = (function () {
       lastDeskKey = null;
       lastCloseAsk = null;
       failedBooks = {};
-      autoEnterDone = false;
+      locationGateOpen = null;
+      pendingRemote = null;
       Link.api.setInstance(instanceId || '');
 
       // המאזין מחובר רק כשהמתאם ימסור לנו את ההחזקה (ראו [setOwner]), וגם
